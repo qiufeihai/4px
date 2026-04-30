@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  node:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/node
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: apps/node/package-lock.json
+      - name: Install deps
+        run: npm ci
+      - name: Syntax check
+        run: |
+          node --check src/server.js
+          node --check src/client.js
+
+  go:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/go
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: apps/go/go.mod
+      - name: Build
+        run: go build ./cmd/4px

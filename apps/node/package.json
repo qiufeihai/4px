@@ -1,0 +1,15 @@
+{
+  "name": "4px",
+  "version": "1.0.0",
+  "private": true,
+  "type": "commonjs",
+  "bin": {
+    "4px": "bin/4px.js"
+  },
+  "scripts": {
+    "4px": "node bin/4px.js",
+    "start:server": "node src/server.js -c config/server.json",
+    "start:client": "node src/client.js -c config/client.json",
+    "start": "node bin/4px.js"
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "listenHost": "0.0.0.0",
+  "listenPort": 6666,
+  "tls": {
+    "keyFile": "/root/.acme.sh/zyko2.online_ecc/zyko2.online.key",
+    "certFile": "/root/.acme.sh/zyko2.online_ecc/fullchain.cer"
+  },
+  "authToken": "change-me-strong-token",
+  "logLevel": "WARN",
+  "maxBufferedBytes": 4194304,
+  "metricsIntervalMs": 30000,
+  "listenBacklog": 4096,
+  "remoteConnectTimeoutMs": 15000,
+  "remoteIdleTimeoutMs": 120000,
+  "remoteKeepAliveInitialDelayMs": 30000,
+  "streamIdleTimeoutMs": 120000
+}

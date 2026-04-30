@@ -1,0 +1,21 @@
+# macOS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# logs
+*.log
+
+# Node.js
+apps/node/node_modules/
+apps/node/npm-debug.log*
+apps/node/.npmrc.local
+
+# Go
+apps/go/bin/
+apps/go/*.exe
+apps/go/*.test
+
+# Temp
+tmp/
+dist/

@@ -1,0 +1,28 @@
+{
+  "socksListenHost": "127.0.0.1",
+  "socksListenPort": 7777,
+  "upstream": {
+    "host": "your-server-host",
+    "port": 6666,
+    "serverName": "your-server-host",
+    "rejectUnauthorized": true
+  },
+  "authToken": "change-me-strong-token",
+  "logLevel": "WARN",
+  "h2SessionPoolSize": 2,
+  "maxBufferedBytes": 4194304,
+  "metricsIntervalMs": 30000,
+  "socksListenBacklog": 4096,
+  "upstreamConnectTimeoutMs": 15000,
+  "streamResponseTimeoutMs": 10000,
+  "streamIdleTimeoutMs": 120000,
+  "localSocketKeepAliveInitialDelayMs": 30000,
+  "localSocketIdleTimeoutMs": 120000,
+  "localAuth": {
+    "enabled": false,
+    "username": "local-user",
+    "password": "local-pass"
+  },
+  "httpListen": "127.0.0.1:7788",
+  "httpListenBacklog": 4096
+}
