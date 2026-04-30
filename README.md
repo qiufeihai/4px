@@ -53,6 +53,7 @@ go run ./cmd/4px -c config/client.json run
 ## 配置入口索引
 
 - Node server 示例：`apps/node/config/server.example.json`
+- Node 多用户示例：`apps/node/config/server.users.example.json`
 - Node client 示例：`apps/node/config/client.example.json`
 - Node 本地调试默认：`apps/node/config/server.json`、`apps/node/config/client.json`
 - Go client 示例：`apps/go/config/client.example.json`

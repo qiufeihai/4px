@@ -5,7 +5,17 @@
     "keyFile": "/root/.acme.sh/zyko2.online_ecc/zyko2.online.key",
     "certFile": "/root/.acme.sh/zyko2.online_ecc/fullchain.cer"
   },
-  "authToken": "change-me-strong-token",
+  "authTokens": [
+    "change-me-strong-token"
+  ],
+  "authUsersFile": "server.users.json",
+  "authUsersReloadIntervalMs": 5000,
+  "admin": {
+    "enabled": true,
+    "listenHost": "127.0.0.1",
+    "listenPort": 6688,
+    "token": "change-me-admin-token"
+  },
   "logLevel": "WARN",
   "maxBufferedBytes": 4194304,
   "metricsIntervalMs": 30000,

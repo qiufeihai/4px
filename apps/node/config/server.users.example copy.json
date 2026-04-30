@@ -1,0 +1,12 @@
+{
+  "users": [
+    {
+      "id": "u_demo_1",
+      "username": "demo-user",
+      "authToken": "change-me-user-token",
+      "enabled": true,
+      "expireAt": null,
+      "note": "example account"
+    }
+  ]
+}

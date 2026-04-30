@@ -2,12 +2,12 @@
   "socksListenHost": "127.0.0.1",
   "socksListenPort": 7777,
   "upstream": {
-    "host": "your-server-host",
+    "host": "your-server-ip",
     "port": 6666,
-    "serverName": "your-server-host",
+    "serverName": "your-server-domain",
+    "authToken": "change-me-strong-token",
     "rejectUnauthorized": true
   },
-  "authToken": "change-me-strong-token",
   "logLevel": "WARN",
   "h2SessionPoolSize": 2,
   "maxBufferedBytes": 4194304,

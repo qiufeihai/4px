@@ -5,9 +5,9 @@
     "host": "206.119.179.201",
     "port": 6666,
     "serverName": "zyko2.online",
+    "authToken": "change-me-strong-token",
     "rejectUnauthorized": true
   },
-  "authToken": "change-me-strong-token",
   "logLevel": "WARN",
   "h2SessionPoolSize": 2,
   "maxBufferedBytes": 4194304,

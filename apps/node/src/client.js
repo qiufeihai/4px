@@ -20,6 +20,11 @@ const maxBufferedBytes = cfg.maxBufferedBytes || 4 * 1024 * 1024;
 const metricsIntervalMs = cfg.metricsIntervalMs || 30000;
 const h2SessionPoolSize = Math.max(1, cfg.h2SessionPoolSize || 2);
 const socksListenBacklog = cfg.socksListenBacklog || 4096;
+const upstreamAuthToken = String((cfg.upstream && cfg.upstream.authToken) || '').trim();
+
+if (!upstreamAuthToken) {
+  throw new Error('client config invalid: upstream.authToken is required');
+}
 
 const sessionPool = Array.from({ length: h2SessionPoolSize }, () => ({
   session: null,
@@ -119,7 +124,7 @@ async function openProxyStream(targetHost, targetPort) {
   const stream = session.request({
     ':method': 'POST',
     ':path': '/proxy',
-    'x-auth-token': cfg.authToken,
+    'x-auth-token': upstreamAuthToken,
     'x-target': target
   });
   logger.info(`open stream idx=${poolIndex} target=${targetHost}:${targetPort}`);

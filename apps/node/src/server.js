@@ -5,6 +5,8 @@ const http2 = require('http2');
 const { monitorEventLoopDelay } = require('perf_hooks');
 const { loadConfig, resolvePath } = require('./config');
 const { createLogger } = require('./logger');
+const { UserStore } = require('./user_store');
+const { startAdminServer } = require('./admin/server');
 
 const cfg = loadConfig(path.resolve(__dirname, '../config/server.json'));
 const key = fs.readFileSync(resolvePath(cfg.__configDir, cfg.tls.keyFile));
@@ -17,6 +19,16 @@ const streamIdleTimeoutMs = cfg.streamIdleTimeoutMs || 0;
 const maxBufferedBytes = cfg.maxBufferedBytes || 4 * 1024 * 1024;
 const metricsIntervalMs = cfg.metricsIntervalMs || 30000;
 const listenBacklog = cfg.listenBacklog || 4096;
+const usersFilePath = cfg.authUsersFile ? resolvePath(cfg.__configDir, cfg.authUsersFile) : '';
+const staticAuthTokens = Array.isArray(cfg.authTokens)
+  ? cfg.authTokens.map((v) => String(v || '').trim()).filter((v) => v)
+  : [];
+const userStore = new UserStore({
+  filePath: usersFilePath,
+  authTokens: staticAuthTokens,
+  logger,
+  reloadIntervalMs: cfg.authUsersReloadIntervalMs || 5000
+});
 
 const stats = {
   streamTotal: 0,
@@ -73,16 +85,18 @@ server.on('stream', (stream, headers) => {
       stream.end();
       return;
     }
-    if (headers['x-auth-token'] !== cfg.authToken) {
+    const authResult = userStore.authenticate(headers['x-auth-token']);
+    if (!authResult.ok) {
       stats.authRejectedTotal += 1;
-      logger.warn(`reject unauthorized request, peer=${remotePeer}, stream=${streamId}`);
+      logger.warn(`reject unauthorized request, peer=${remotePeer}, stream=${streamId}, reason=${authResult.reason}`);
       stream.respond({ ':status': 401 });
       stream.end();
       return;
     }
+    const authUser = authResult.user;
 
     const { host, port } = parseTarget(headers['x-target']);
-    logger.info(`stream accepted, peer=${remotePeer}, stream=${streamId}, target=${host}:${port}`);
+    logger.info(`stream accepted, peer=${remotePeer}, stream=${streamId}, user=${authUser.username}, target=${host}:${port}`);
     const remote = net.createConnection({ host, port });
     remote.setNoDelay(true);
     remote.setKeepAlive(true, remoteKeepAliveInitialDelayMs);
@@ -181,4 +195,9 @@ server.listen(cfg.listenPort, cfg.listenHost, listenBacklog, () => {
   logger.info(`H2 server listening on ${cfg.listenHost}:${cfg.listenPort}`);
   logger.info(`log level=${logger.level}`);
   logger.info(`listen backlog=${listenBacklog}`);
+  if (userStore.enabled) {
+    logger.info(`multi-user auth enabled, users_file=${usersFilePath}`);
+  }
+  logger.info(`static auth tokens enabled, count=${staticAuthTokens.length}`);
+  startAdminServer({ cfg, userStore, logger });
 });

@@ -10,6 +10,7 @@ Node 版本的 `4px` 负责核心数据面，包含：
 - `bin/4px.js`：命令入口（`server` / `client` / `help`）
 - `src/server.js`：上游服务端
 - `src/client.js`：本地客户端
+- `TODO.md`：功能待办与规划
 - `src/socks5.js`：SOCKS5 协议处理
 - `src/config.js`：配置加载逻辑
 - `src/run_cluster.js`：多进程 server 启动入口
@@ -38,6 +39,7 @@ npm install
 ```bash
 cp config/server.example.json config/server.json
 cp config/client.example.json config/client.json
+cp config/server.users.example.json config/server.users.json
 ```
 
 方式 B（用 CLI 在当前目录自动初始化）：
@@ -81,7 +83,10 @@ node bin/4px.js client -c config/client.json
 
 - `listenHost` / `listenPort`：监听地址与端口
 - `tls.keyFile` / `tls.certFile`：TLS 私钥与证书
-- `authToken`：鉴权 token（需与 client 一致）
+- `authTokens`：静态鉴权 token 列表（可与多用户并行生效）
+- `authUsersFile`：多用户文件路径（启用后按用户 `authToken` 鉴权）
+- `authUsersReloadIntervalMs`：用户文件热加载间隔
+- `admin.enabled` / `admin.listenHost` / `admin.listenPort` / `admin.token`：Web 管理端配置
 - `logLevel`：日志等级（`DEBUG/INFO/WARN/ERROR`）
 - `listenBacklog`：监听 backlog
 - `maxBufferedBytes`：单连接写缓冲上限
@@ -97,7 +102,7 @@ node bin/4px.js client -c config/client.json
 - `httpListenBacklog`：HTTP 代理监听 backlog
 - `upstream.host` / `upstream.port`：远端 server 地址
 - `upstream.servername`：TLS SNI / 证书名称
-- `upstream.authToken`：鉴权 token
+- `upstream.authToken`：上游鉴权 token（填某个用户 `authToken` 或命中 `authTokens` 列表的 token）
 - `upstream.caFile`：自定义 CA 文件路径（可选）
 - `upstream.rejectUnauthorized`：是否严格校验证书
 - `h2SessionPoolSize`：H2 会话池大小
@@ -160,5 +165,36 @@ journalctl -u 4px -f
 - 支持 SOCKS5 `CONNECT`
 - 支持 HTTP 代理（`CONNECT` + 普通 HTTP 请求）
 - 支持 IPv4 / IPv6 / 域名目标
+- 支持多用户鉴权（用户启停、有效期）
+- 支持内置 Web 管理界面（用户增删改查）
 - 暂不支持 SOCKS5 `UDP ASSOCIATE` / `BIND`
 - `x-auth-token` 为基础鉴权，生产环境建议额外叠加 mTLS、限流与访问控制
+
+## 多用户与 Web 管理
+
+启用步骤：
+
+```bash
+cd apps/node
+cp config/server.users.example.json config/server.users.json
+# 修改 server.json 中 admin.token、users 文件路径等配置
+node bin/4px.js server -c config/server.json
+```
+
+访问管理页：
+
+```text
+http://127.0.0.1:6688/admin
+```
+
+说明：
+- 首次访问会跳转到登录页：`/admin/login`，输入 `admin.token` 后进入管理页。
+- 登录成功后使用 Cookie 维持登录态；也支持请求头 `Authorization: Bearer <admin.token>` 调用 API。
+- 管理页已拆分为 Tab：用户管理、服务器资源、配置管理。
+- 管理页资源页已分开展示：服务器整体资源 + 本进程资源占用（含占比）。
+- 管理页支持在线查看/编辑 `server.json`（保存后需重启 server 生效）。
+- `server.users.json` 中用户凭证字段为 `users[].authToken`。
+- 用户管理支持导出备份与导入恢复（JSON 文件，导入默认合并，可选覆盖；导入前会显示预览）。
+- 用户管理支持快捷续期：可按天/周/月指定续期时长并一键生效。
+- 新增/编辑用户后会写入 `server.users.json`，无需重启 server。
+- 用户被禁用或到期后，新连接会被拒绝（已建立连接不强制断开）。

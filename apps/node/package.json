@@ -1,7 +1,6 @@
 {
   "name": "4px",
   "version": "1.0.0",
-  "private": true,
   "type": "commonjs",
   "bin": {
     "4px": "bin/4px.js"
