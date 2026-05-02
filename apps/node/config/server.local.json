@@ -2,8 +2,8 @@
   "listenHost": "0.0.0.0",
   "listenPort": 6666,
   "tls": {
-    "keyFile": "/root/.acme.sh/zyko2.online_ecc/zyko2.online.key",
-    "certFile": "/root/.acme.sh/zyko2.online_ecc/fullchain.cer"
+    "keyFile": "certs/dev.key",
+    "certFile": "certs/dev.crt"
   },
   "authTokens": [
     "change-me-strong-token"
