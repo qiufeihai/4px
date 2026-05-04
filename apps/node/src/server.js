@@ -170,13 +170,6 @@ const server = http2.createSecureServer({
   }
 });
 
-server.on('session', (session) => {
-  const sock = session && session.socket;
-  if (!sock) return;
-  sock.setNoDelay(true);
-  sock.setKeepAlive(true, remoteKeepAliveInitialDelayMs);
-});
-
 server.on('stream', (stream, headers) => {
   stats.streamTotal += 1;
   stats.activeStreams += 1;
