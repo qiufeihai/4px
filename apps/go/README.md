@@ -7,9 +7,17 @@ Go 版本客户端用于连接 Node `server`，并提供跨平台系统代理开
 - 请求路径：`POST /proxy`
 - 关键请求头：`x-auth-token`、`x-target(base64url(host:port))`
 
+## 架构说明
+
+- `cmd/4px/main.go`：CLI 入口（薄封装）
+- `pkg/clientcore`：核心能力（配置加载、代理运行、系统代理控制/状态）
+- GUI（`apps/go/gui`）与 CLI（`apps/go/cmd/4px`）共用同一 `clientcore`
+
 ## 目录
 
 - `cmd/4px/main.go`：主程序入口
+- `gui/`：Wails GUI（桌面端）
+- `pkg/clientcore`：Go 客户端核心能力
 - `config/client.example.json`：配置模板
 
 ## 前置要求
@@ -58,7 +66,8 @@ go run ./cmd/4px -c config/client.json sysproxy-status
 ```
 
 说明：
-- 未传 `-c` 时默认读取 `config/client.json`。
+- 未传 `-c` 时默认读取当前目录 `./client.json`。
+- 若 `./client.json` 不存在，会自动创建模板并提示“先修改配置再重启”。
 - `sysproxy-enable` 会同时设置系统 `HTTP/HTTPS/SOCKS` 代理。
 
 ## 配置项说明

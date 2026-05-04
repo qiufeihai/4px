@@ -1,6 +1,8 @@
 const http = require('http');
 const os = require('os');
 const fs = require('fs');
+const { spawn } = require('child_process');
+const { resolvePath } = require('../config');
 const { renderAdminPage, renderLoginPage } = require('./page');
 
 function parseJsonBody(req) {
@@ -85,10 +87,113 @@ function safePercent(numerator, denominator) {
   return Number(((numerator / denominator) * 100).toFixed(2));
 }
 
+function getSafeHost(input) {
+  const value = String(input || '').trim();
+  if (!value || value === '0.0.0.0' || value === '::') return '';
+  return value;
+}
+
+function parseHostFromRequest(req) {
+  const raw = String(req.headers.host || '').trim();
+  if (!raw) return '';
+  const noPort = raw.includes(':') ? raw.split(':')[0] : raw;
+  return getSafeHost(noPort);
+}
+
+function loadClientTemplate(cfg) {
+  const exportCfg = (cfg.admin && cfg.admin.clientConfigExport) || {};
+  const templatePath = exportCfg.templateFile
+    ? resolvePath(cfg.__configDir, exportCfg.templateFile)
+    : resolvePath(cfg.__configDir, 'client.example.json');
+  try {
+    const text = fs.readFileSync(templatePath, 'utf8');
+    const parsed = JSON.parse(text);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed;
+    }
+  } catch (err) {
+    // fall back to a minimal template
+  }
+  return {
+    socksListenHost: '127.0.0.1',
+    socksListenPort: 7777,
+    upstream: {
+      host: 'your-server-ip',
+      port: 6666,
+      serverName: 'your-server-domain',
+      authToken: 'change-me-strong-token',
+      rejectUnauthorized: true
+    }
+  };
+}
+
+function buildClientConfigForUser(cfg, req, user) {
+  const exportCfg = (cfg.admin && cfg.admin.clientConfigExport) || {};
+  const template = loadClientTemplate(cfg);
+  const requestHost = parseHostFromRequest(req);
+  const upstreamHost = getSafeHost(exportCfg.upstreamHost) || getSafeHost(cfg.publicHost) || requestHost || '127.0.0.1';
+  const upstreamPort = Number(exportCfg.upstreamPort || cfg.listenPort || 6666);
+  const serverName = String(exportCfg.serverName || upstreamHost).trim() || upstreamHost;
+  const rejectUnauthorized = exportCfg.rejectUnauthorized !== false;
+
+  const out = JSON.parse(JSON.stringify(template));
+  if (!out.upstream || typeof out.upstream !== 'object') out.upstream = {};
+  out.upstream.host = upstreamHost;
+  out.upstream.port = upstreamPort;
+  out.upstream.serverName = serverName;
+  out.upstream.authToken = String(user.authToken || '');
+  out.upstream.rejectUnauthorized = rejectUnauthorized;
+  if (typeof exportCfg.caFile === 'string') {
+    out.upstream.caFile = exportCfg.caFile;
+  }
+  return out;
+}
+
+function validateServiceName(serviceName) {
+  return /^[a-zA-Z0-9_.@-]+$/.test(serviceName);
+}
+
+function buildRestartCommand(serviceControl) {
+  const cfg = serviceControl || {};
+  if (cfg.enabled !== true) return null;
+  const serviceName = String(cfg.systemdService || '').trim();
+  if (!serviceName) {
+    throw new Error('admin.serviceControl.systemdService is required');
+  }
+  if (!validateServiceName(serviceName)) {
+    throw new Error('invalid systemd service name');
+  }
+  const useSudo = cfg.useSudo === true;
+  if (useSudo) {
+    return {
+      command: 'sudo',
+      args: ['-n', 'systemctl', 'restart', serviceName]
+    };
+  }
+  return {
+    command: 'systemctl',
+    args: ['restart', serviceName]
+  };
+}
+
+function triggerRestart(commandSpec, logger) {
+  const child = spawn(commandSpec.command, commandSpec.args, {
+    detached: true,
+    stdio: 'ignore'
+  });
+  child.on('error', (err) => {
+    logger.error(`restart command failed: ${commandSpec.command} ${commandSpec.args.join(' ')}`, err.message);
+  });
+  child.unref();
+}
+
 function startAdminServer(options) {
   const cfg = options.cfg || {};
   const userStore = options.userStore;
   const logger = options.logger;
+  const getUserRuntimeStats = typeof options.getUserRuntimeStats === 'function'
+    ? options.getUserRuntimeStats
+    : () => ({});
   const admin = cfg.admin || {};
   if (admin.enabled !== true) return;
   if (!userStore || !userStore.enabled) {
@@ -102,6 +207,7 @@ function startAdminServer(options) {
   }
   const adminListenHost = admin.listenHost || '127.0.0.1';
   const adminListenPort = Number(admin.listenPort || 6688);
+  const restartCommand = buildRestartCommand(admin.serviceControl);
   let lastCpu = snapshotCpuTimes();
   let lastProcCpuUsage = process.cpuUsage();
   let lastProcSampleAt = Date.now();
@@ -245,8 +351,32 @@ function startAdminServer(options) {
         sendJson(res, 200, { ok: true, configPath: cfg.__configPath, message: 'saved, restart server to apply changes' });
         return;
       }
+      if (req.method === 'POST' && url.pathname === '/api/system/restart') {
+        if (!restartCommand) {
+          sendJson(res, 403, { ok: false, error: 'service restart is disabled' });
+          return;
+        }
+        triggerRestart(restartCommand, logger);
+        sendJson(res, 202, {
+          ok: true,
+          message: 'restart triggered',
+          command: `${restartCommand.command} ${restartCommand.args.join(' ')}`
+        });
+        return;
+      }
       if (req.method === 'GET' && url.pathname === '/api/users') {
-        sendJson(res, 200, { ok: true, users: userStore.list() });
+        const runtime = getUserRuntimeStats();
+        const users = userStore.list().map((item) => {
+          const extra = runtime[item.id] || {};
+          return {
+            ...item,
+            online: extra.online === true,
+            activeConnections: Number(extra.activeConnections || 0),
+            lastSeenAt: extra.lastSeenAt || null,
+            lastActiveAt: extra.lastActiveAt || null
+          };
+        });
+        sendJson(res, 200, { ok: true, users });
         return;
       }
       if (req.method === 'GET' && url.pathname === '/api/users/export') {
@@ -268,6 +398,22 @@ function startAdminServer(options) {
         const body = await parseJsonBody(req);
         const summary = userStore.previewImport(body.users, body.mode);
         sendJson(res, 200, { ok: true, ...summary });
+        return;
+      }
+      if (req.method === 'GET' && url.pathname.startsWith('/api/users/') && url.pathname.endsWith('/client-config')) {
+        const id = url.pathname.replace('/api/users/', '').replace('/client-config', '').replace(/\//g, '');
+        const user = userStore.list().find((item) => item.id === id);
+        if (!user) {
+          sendJson(res, 404, { ok: false, error: 'user_not_found' });
+          return;
+        }
+        const clientCfg = buildClientConfigForUser(cfg, req, user);
+        const filename = `client.${user.username || user.id}.json`;
+        res.writeHead(200, {
+          'content-type': 'application/json; charset=utf-8',
+          'content-disposition': `attachment; filename="${filename}"`
+        });
+        res.end(`${JSON.stringify(clientCfg, null, 2)}\n`);
         return;
       }
       if (req.method === 'POST' && url.pathname === '/api/users') {

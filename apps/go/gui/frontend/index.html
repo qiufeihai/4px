@@ -1,0 +1,557 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>4px Client GUI</title>
+  <style>
+    :root {
+      --bg: #f6f7fb;
+      --card: #fff;
+      --line: #e4e7ef;
+      --text: #1f2430;
+      --muted: #6b7280;
+      --ok: #16a34a;
+      --err: #dc2626;
+      --btn: #1d4ed8;
+      --btn-hover: #1e40af;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    .container {
+      max-width: 1100px;
+      margin: 20px auto;
+      padding: 0 16px;
+      display: grid;
+      grid-template-columns: 1.1fr 0.9fr;
+      gap: 16px;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 16px;
+    }
+    .title {
+      margin: 0 0 10px;
+      font-size: 18px;
+    }
+    .sub {
+      margin: 0 0 12px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px 12px;
+    }
+    label {
+      font-size: 12px;
+      color: var(--muted);
+      display: block;
+      margin-bottom: 4px;
+    }
+    input, select, textarea {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 8px 10px;
+      font-size: 13px;
+      background: #fff;
+      color: var(--text);
+    }
+    textarea {
+      min-height: 200px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      resize: vertical;
+    }
+    .full { grid-column: 1 / -1; }
+    .row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .inline-check {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 12px;
+      padding: 0 4px;
+    }
+    .inline-check input {
+      width: auto;
+      margin: 0;
+    }
+    button {
+      border: 0;
+      border-radius: 8px;
+      padding: 8px 12px;
+      background: var(--btn);
+      color: #fff;
+      cursor: pointer;
+      font-size: 13px;
+    }
+    button:hover { background: var(--btn-hover); }
+    button.secondary { background: #4b5563; }
+    button.danger { background: #b91c1c; }
+    .status-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    .status-item {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 8px;
+      font-size: 13px;
+      line-height: 1.4;
+    }
+    .logs {
+      height: 420px;
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #0f172a;
+      color: #e2e8f0;
+      padding: 10px;
+      font-size: 12px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .msg {
+      margin-top: 10px;
+      font-size: 13px;
+    }
+    .ok { color: var(--ok); }
+    .err { color: var(--err); }
+    @media (max-width: 980px) {
+      .container { grid-template-columns: 1fr; }
+      .grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <section class="card">
+      <h1 class="title">4px Client GUI</h1>
+      <p class="sub">配置路径自动选择：开发环境使用项目目录 `apps/go/client.json`，打包运行优先使用当前运行目录的 `client.json`。</p>
+      <div class="grid">
+        <div>
+          <label for="upstreamHost">upstream_host</label>
+          <input id="upstreamHost" />
+        </div>
+        <div>
+          <label for="upstreamPort">upstream_port</label>
+          <input id="upstreamPort" type="number" />
+        </div>
+        <div>
+          <label for="serverName">server_name</label>
+          <input id="serverName" />
+        </div>
+        <div>
+          <label for="authToken">auth_token</label>
+          <input id="authToken" />
+        </div>
+        <div>
+          <label for="socksListen">socks_listen</label>
+          <input id="socksListen" />
+        </div>
+        <div>
+          <label for="httpListen">http_listen</label>
+          <input id="httpListen" />
+        </div>
+        <div>
+          <label for="rejectUnauthorized">reject_unauthorized</label>
+          <select id="rejectUnauthorized">
+            <option value="true">true</option>
+            <option value="false">false</option>
+          </select>
+        </div>
+        <div>
+          <label for="logLevel">log_level</label>
+          <select id="logLevel">
+            <option>DEBUG</option>
+            <option selected>INFO</option>
+            <option>WARN</option>
+            <option>ERROR</option>
+          </select>
+        </div>
+        <div class="full">
+          <label for="rawJson">完整 JSON（保存时优先使用此内容）</label>
+          <textarea id="rawJson"></textarea>
+        </div>
+      </div>
+      <div class="row" style="margin-top: 10px;">
+        <button id="btnLoad">读取配置</button>
+        <button id="btnSave">保存配置</button>
+        <button id="btnStart">启动 Client</button>
+        <button id="btnStop" class="danger">停止 Client</button>
+        <label class="inline-check" for="stopAutoDisableProxy">
+          <input id="stopAutoDisableProxy" type="checkbox" checked />
+          停止后自动关闭系统代理
+        </label>
+        <button id="btnProxyRefresh" class="secondary">系统代理状态</button>
+        <button id="btnProxyEnable" class="secondary">开启系统代理</button>
+        <button id="btnProxyDisable" class="secondary">关闭系统代理</button>
+      </div>
+      <div id="message" class="msg"></div>
+    </section>
+
+    <section class="card">
+      <h2 class="title">运行状态与日志</h2>
+      <div class="status-row">
+        <div class="status-item" id="statusRunning">running: -</div>
+        <div class="status-item" id="statusPid">pid: -</div>
+        <div class="status-item" id="statusConfig">config: -</div>
+        <div class="status-item" id="statusStarted">started: -</div>
+        <div class="status-item" id="statusExited">exited: -</div>
+        <div class="status-item" id="statusProxy">system proxy: -</div>
+      </div>
+      <div class="row" style="margin-bottom: 8px;">
+        <button id="btnRefreshStatus" class="secondary">刷新状态</button>
+        <button id="btnRefreshLogs" class="secondary">刷新日志</button>
+        <button id="btnClearLogs" class="secondary">清空日志</button>
+      </div>
+      <div id="logs" class="logs"></div>
+    </section>
+  </div>
+
+  <script>
+    const fields = {
+      upstreamHost: document.getElementById("upstreamHost"),
+      upstreamPort: document.getElementById("upstreamPort"),
+      serverName: document.getElementById("serverName"),
+      authToken: document.getElementById("authToken"),
+      socksListen: document.getElementById("socksListen"),
+      httpListen: document.getElementById("httpListen"),
+      rejectUnauthorized: document.getElementById("rejectUnauthorized"),
+      logLevel: document.getElementById("logLevel"),
+      rawJson: document.getElementById("rawJson")
+    };
+    const ui = {
+      message: document.getElementById("message"),
+      logs: document.getElementById("logs"),
+      stopAutoDisableProxy: document.getElementById("stopAutoDisableProxy"),
+      startBtn: document.getElementById("btnStart"),
+      stopBtn: document.getElementById("btnStop"),
+      running: document.getElementById("statusRunning"),
+      pid: document.getElementById("statusPid"),
+      config: document.getElementById("statusConfig"),
+      started: document.getElementById("statusStarted"),
+      exited: document.getElementById("statusExited"),
+      proxy: document.getElementById("statusProxy")
+    };
+    let proxyState = "unknown";
+
+    function api() {
+      return window.go && window.go.main && window.go.main.App ? window.go.main.App : null;
+    }
+
+    function showMessage(text, isError) {
+      ui.message.textContent = text || "";
+      ui.message.className = "msg " + (isError ? "err" : "ok");
+    }
+
+    function asNumber(value, fallback) {
+      const n = Number(value);
+      return Number.isFinite(n) ? n : fallback;
+    }
+
+    function getConfigPath() {
+      return "";
+    }
+
+    function pickConfigFromForm() {
+      return {
+        upstream_host: fields.upstreamHost.value.trim(),
+        upstream_port: asNumber(fields.upstreamPort.value, 0),
+        server_name: fields.serverName.value.trim(),
+        auth_token: fields.authToken.value.trim(),
+        socks_listen: fields.socksListen.value.trim(),
+        http_listen: fields.httpListen.value.trim(),
+        reject_unauthorized: fields.rejectUnauthorized.value === "true",
+        log_level: fields.logLevel.value
+      };
+    }
+
+    function fillFormFromConfig(cfg) {
+      fields.upstreamHost.value = cfg.upstream_host || "";
+      fields.upstreamPort.value = cfg.upstream_port || "";
+      fields.serverName.value = cfg.server_name || "";
+      fields.authToken.value = cfg.auth_token || "";
+      fields.socksListen.value = cfg.socks_listen || "";
+      fields.httpListen.value = cfg.http_listen || "";
+      fields.rejectUnauthorized.value = String(cfg.reject_unauthorized !== false);
+      fields.logLevel.value = cfg.log_level || "INFO";
+      fields.rawJson.value = JSON.stringify(cfg, null, 2);
+    }
+
+    async function loadConfig() {
+      const backend = api();
+      if (!backend) {
+        showMessage("Wails backend 未就绪", true);
+        return;
+      }
+      try {
+        const cfg = await backend.LoadConfig(getConfigPath());
+        fillFormFromConfig(cfg || {});
+        showMessage("配置读取成功", false);
+      } catch (err) {
+        showMessage("读取配置失败: " + (err || ""), true);
+      }
+    }
+
+    function buildConfigForSave() {
+      const raw = (fields.rawJson.value || "").trim();
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+          throw new Error("JSON 必须是对象");
+        }
+        return parsed;
+      }
+      return pickConfigFromForm();
+    }
+
+    async function saveConfig() {
+      const backend = api();
+      if (!backend) {
+        showMessage("Wails backend 未就绪", true);
+        return;
+      }
+      try {
+        const cfg = buildConfigForSave();
+        await backend.SaveConfig(getConfigPath(), cfg);
+        fillFormFromConfig(cfg);
+        showMessage("配置保存成功", false);
+      } catch (err) {
+        showMessage("保存配置失败: " + (err || ""), true);
+      }
+    }
+
+    async function startClient() {
+      const backend = api();
+      if (!backend) {
+        showMessage("Wails backend 未就绪", true);
+        return;
+      }
+      try {
+        await backend.StartClient(getConfigPath());
+        showMessage("Client 启动成功", false);
+      } catch (err) {
+        showMessage("启动失败: " + (err || ""), true);
+      } finally {
+        await refreshStatus();
+        await refreshLogs();
+      }
+    }
+
+    async function stopClient() {
+      const backend = api();
+      if (!backend) {
+        showMessage("Wails backend 未就绪", true);
+        return;
+      }
+      try {
+        const autoDisable = !!ui.stopAutoDisableProxy.checked;
+        await backend.StopClient(autoDisable);
+        showMessage(autoDisable ? "Client 已停止，并已尝试关闭系统代理" : "Client 已停止", false);
+      } catch (err) {
+        const msg = String(err || "");
+        if (msg.includes("client is not running")) {
+          showMessage("Client 未在 GUI 内运行（GUI 仅能停止由 GUI 启动的实例）", false);
+        } else {
+          showMessage("停止失败: " + msg, true);
+        }
+      } finally {
+        await refreshStatus();
+        await refreshLogs();
+      }
+    }
+
+    function parseProxyState(rawText) {
+      const text = String(rawText || "").toLowerCase();
+      const compact = text.replace(/\s+/g, " ");
+      const disabledPatterns = [
+        "enabled: no",
+        "enabled : no",
+        "disabled",
+        "disable",
+        "state: off",
+        "state : off",
+        "off",
+        "none",
+        "direct",
+        "no"
+      ];
+      if (disabledPatterns.some((p) => compact.includes(p))) {
+        return "disabled";
+      }
+      const enabledPatterns = [
+        "enabled: yes",
+        "enabled : yes",
+        "enabled",
+        "manual",
+        "on",
+        "proxy=1"
+      ];
+      if (enabledPatterns.some((p) => compact.includes(p))) {
+        return "enabled";
+      }
+      return "unknown";
+    }
+
+    function setProxyState(state) {
+      proxyState = state;
+      if (state === "enabled") {
+        ui.proxy.textContent = "system proxy: 已开启";
+      } else if (state === "disabled") {
+        ui.proxy.textContent = "system proxy: 已关闭";
+      } else {
+        ui.proxy.textContent = "system proxy: 未知";
+      }
+    }
+
+    function proxyStateLabel(state) {
+      if (state === "enabled") {
+        return "已开启";
+      }
+      if (state === "disabled") {
+        return "已关闭";
+      }
+      return "未知";
+    }
+
+    async function refreshProxyState(showToast) {
+      const backend = api();
+      if (!backend) {
+        showMessage("Wails backend 未就绪", true);
+        return;
+      }
+      try {
+        const out = await backend.SystemProxyStatus(getConfigPath());
+        const state = parseProxyState(out);
+        setProxyState(state);
+        if (showToast) {
+          showMessage("系统代理状态：" + proxyStateLabel(state), false);
+        }
+      } catch (err) {
+        showMessage("系统代理操作失败: " + (err || ""), true);
+      } finally {
+        await refreshLogs();
+      }
+    }
+
+    async function setProxyEnabled(enabled) {
+      const backend = api();
+      if (!backend) {
+        showMessage("Wails backend 未就绪", true);
+        return;
+      }
+      try {
+        if (enabled) {
+          await backend.SystemProxyEnable(getConfigPath());
+          showMessage("已开启系统代理", false);
+        } else {
+          await backend.SystemProxyDisable(getConfigPath());
+          showMessage("已关闭系统代理", false);
+        }
+      } catch (err) {
+        showMessage("系统代理操作失败: " + (err || ""), true);
+      } finally {
+        await new Promise((resolve) => setTimeout(resolve, 350));
+        await refreshProxyState(false);
+      }
+    }
+
+    async function refreshStatus() {
+      const backend = api();
+      if (!backend) {
+        return;
+      }
+      try {
+        const s = await backend.GetClientStatus();
+        ui.running.textContent = "running: " + (s.running ? "yes" : "no");
+        ui.pid.textContent = "pid: " + (s.pid || "-");
+        ui.config.textContent = "config: " + (s.configPath || "-");
+        ui.started.textContent = "started: " + (s.lastStartedAt || "-");
+        ui.exited.textContent = "exited: " + (s.lastExitedAt || "-");
+        ui.startBtn.disabled = !!s.running;
+        ui.stopBtn.disabled = !s.running;
+      } catch (err) {
+        showMessage("状态刷新失败: " + (err || ""), true);
+      }
+    }
+
+    async function refreshLogs() {
+      const backend = api();
+      if (!backend) {
+        return;
+      }
+      try {
+        const lines = await backend.GetClientLogs(400);
+        ui.logs.textContent = (lines || []).join("\n");
+        ui.logs.scrollTop = ui.logs.scrollHeight;
+      } catch (err) {
+        showMessage("日志刷新失败: " + (err || ""), true);
+      }
+    }
+
+    async function clearLogs() {
+      const backend = api();
+      if (!backend) {
+        return;
+      }
+      try {
+        await backend.ClearClientLogs();
+        ui.logs.textContent = "";
+        showMessage("日志已清空", false);
+      } catch (err) {
+        showMessage("清空日志失败: " + (err || ""), true);
+      }
+    }
+
+    function bindEvents() {
+      document.getElementById("btnLoad").addEventListener("click", loadConfig);
+      document.getElementById("btnSave").addEventListener("click", saveConfig);
+      document.getElementById("btnStart").addEventListener("click", startClient);
+      document.getElementById("btnStop").addEventListener("click", stopClient);
+      ui.stopAutoDisableProxy.addEventListener("change", () => {
+        localStorage.setItem("gui.stop.autoDisableSystemProxy", ui.stopAutoDisableProxy.checked ? "1" : "0");
+      });
+      document.getElementById("btnProxyRefresh").addEventListener("click", () => refreshProxyState(true));
+      document.getElementById("btnProxyEnable").addEventListener("click", () => setProxyEnabled(true));
+      document.getElementById("btnProxyDisable").addEventListener("click", () => setProxyEnabled(false));
+      document.getElementById("btnRefreshStatus").addEventListener("click", refreshStatus);
+      document.getElementById("btnRefreshLogs").addEventListener("click", refreshLogs);
+      document.getElementById("btnClearLogs").addEventListener("click", clearLogs);
+    }
+
+    async function boot() {
+      const autoDisable = localStorage.getItem("gui.stop.autoDisableSystemProxy");
+      if (autoDisable === "0") {
+        ui.stopAutoDisableProxy.checked = false;
+      }
+      bindEvents();
+      await refreshStatus();
+      await refreshLogs();
+      await refreshProxyState(false);
+      setInterval(refreshStatus, 3000);
+      setInterval(refreshLogs, 2000);
+      await loadConfig();
+    }
+
+    boot();
+  </script>
+</body>
+</html>

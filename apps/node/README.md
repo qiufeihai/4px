@@ -86,7 +86,10 @@ node bin/4px.js client -c config/client.json
 - `authTokens`：静态鉴权 token 列表（可与多用户并行生效）
 - `authUsersFile`：多用户文件路径（启用后按用户 `authToken` 鉴权）
 - `authUsersReloadIntervalMs`：用户文件热加载间隔
+- `userActivityUpdateIntervalMs`：用户“最近活跃”时间的采样更新间隔（毫秒，默认 `60000`）
 - `admin.enabled` / `admin.listenHost` / `admin.listenPort` / `admin.token`：Web 管理端配置
+- `admin.serviceControl.enabled` / `admin.serviceControl.systemdService` / `admin.serviceControl.useSudo`：Web 触发 systemd 重启配置
+- `admin.clientConfigExport.*`：用户 client 配置导出默认值（`upstreamHost/upstreamPort/serverName/rejectUnauthorized/caFile/templateFile`）
 - `logLevel`：日志等级（`DEBUG/INFO/WARN/ERROR`）
 - `listenBacklog`：监听 backlog
 - `maxBufferedBytes`：单连接写缓冲上限
@@ -193,8 +196,18 @@ http://127.0.0.1:6688/admin
 - 管理页已拆分为 Tab：用户管理、服务器资源、配置管理。
 - 管理页资源页已分开展示：服务器整体资源 + 本进程资源占用（含占比）。
 - 管理页支持在线查看/编辑 `server.json`（保存后需重启 server 生效）。
+- 配置 `admin.serviceControl` 后，可在管理页一键重启 systemd 服务。
 - `server.users.json` 中用户凭证字段为 `users[].authToken`。
 - 用户管理支持导出备份与导入恢复（JSON 文件，导入默认合并，可选覆盖；导入前会显示预览）。
 - 用户管理支持快捷续期：可按天/周/月指定续期时长并一键生效。
+- 用户管理列表支持在线状态、当前连接数、最近活跃时间展示。
+- 用户管理支持按用户导出 `client.json`（自动注入服务端地址、端口和该用户 `authToken`）。
 - 新增/编辑用户后会写入 `server.users.json`，无需重启 server。
 - 用户被禁用或到期后，新连接会被拒绝（已建立连接不强制断开）。
+
+systemd 重启按钮权限建议（示例）：
+
+```text
+# /etc/sudoers.d/4px-admin
+4px ALL=(root) NOPASSWD: /bin/systemctl restart 4px
+```

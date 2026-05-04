@@ -3,6 +3,7 @@
 `4px` 是一个跨语言代理工具集，当前包含：
 - Node.js 数据面（`apps/node`）：提供 `server` 与 `client` 两个进程，协议为 `TLS + HTTP/2`。
 - Go 客户端（`apps/go`）：兼容 Node `server` 协议，额外提供系统代理开关能力。
+- GUI 客户端（`apps/go/gui`）：基于 `Go + Wails` 的跨平台桌面版（开发中）。
 
 适用场景：
 - 你有一台远端服务器，想通过单条 TLS 连接承载多路代理流量。
@@ -19,9 +20,14 @@
       src/server.js
       src/client.js
       config/*.json
-    go/                   # Go 客户端
+    go/                   # Go 客户端（CLI + 可复用 core）
       cmd/4px/main.go
+      pkg/clientcore/
       config/client.example.json
+      gui/                # GUI 客户端（Wails）
+        main.go
+        app.go
+        frontend/dist/index.html
   .github/workflows/ci.yml
 ```
 
@@ -57,6 +63,7 @@ go run ./cmd/4px -c config/client.json run
 - Node client 示例：`apps/node/config/client.example.json`
 - Node 本地调试默认：`apps/node/config/server.json`、`apps/node/config/client.json`
 - Go client 示例：`apps/go/config/client.example.json`
+- GUI 说明：`apps/go/gui/README.md`
 
 ## 常用命令
 
@@ -83,6 +90,10 @@ go run ./cmd/4px -c config/client.json sysproxy-disable
 go run ./cmd/4px -c config/client.json sysproxy-status
 ```
 
+说明：
+- `apps/go/cmd/4px` 是 CLI 入口，核心逻辑在 `apps/go/pkg/clientcore`。
+- `apps/go/gui` 直接复用 `clientcore`，不再通过 `go run ./cmd/4px` 间接调用。
+
 ## 运行建议
 
 - 开发调试：优先使用前台运行（直接命令启动），便于看日志。
@@ -93,3 +104,4 @@ go run ./cmd/4px -c config/client.json sysproxy-status
 
 - Node 详细说明：`apps/node/README.md`
 - Go 详细说明：`apps/go/README.md`
+- GUI 详细说明：`apps/go/gui/README.md`

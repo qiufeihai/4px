@@ -3,6 +3,7 @@
   "http_listen": "127.0.0.1:7788",
   "upstream_host": "206.119.179.201",
   "upstream_port": 6666,
+  "upstream_path": "/proxy",
   "server_name": "zyko2.online",
   "auth_token": "change-me-strong-token",
   "reject_unauthorized": true,
@@ -10,5 +11,11 @@
   "upstream_connect_timeout_ms": 15000,
   "response_header_timeout_ms": 10000,
   "idle_timeout_ms": 120000,
+  "upstream_max_idle_conns": 512,
+  "upstream_max_idle_conns_per_host": 512,
+  "upstream_max_conns_per_host": 0,
+  "upstream_disable_compression": true,
+  "upstream_h2_read_idle_timeout_ms": 30000,
+  "upstream_h2_ping_timeout_ms": 10000,
   "log_level": "INFO"
 }

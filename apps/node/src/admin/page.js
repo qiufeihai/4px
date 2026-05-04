@@ -123,7 +123,7 @@ function renderAdminPage(users) {
     </div>
     <table>
       <thead>
-        <tr><th>ID</th><th>用户名</th><th>AuthToken</th><th>启用</th><th>到期时间</th><th>备注</th><th>操作</th></tr>
+        <tr><th>ID</th><th>用户名</th><th>在线</th><th>连接数</th><th>最近活跃</th><th>AuthToken</th><th>启用</th><th>到期时间</th><th>备注</th><th>操作</th></tr>
       </thead>
       <tbody id="user-rows"></tbody>
     </table>
@@ -170,6 +170,7 @@ function renderAdminPage(users) {
       <strong>Server 配置管理（server.json）</strong>
       <button id="load-config-btn">加载配置</button>
       <button id="save-config-btn">保存配置</button>
+      <button id="restart-server-btn">重启服务</button>
       <span id="config-path">-</span>
     </div>
     <div style="margin-top:8px;">
@@ -294,6 +295,11 @@ function renderAdminPage(users) {
       document.getElementById('config-tip').textContent = data.message || '保存成功，重启 server 后生效。';
     }
 
+    async function restartServerService() {
+      const data = await request('/api/system/restart', { method: 'POST' });
+      document.getElementById('config-tip').textContent = (data.message || '已触发重启') + '，请稍后刷新页面。';
+    }
+
     function buildBackupFilename() {
       const d = new Date();
       const p = (n) => String(n).padStart(2, '0');
@@ -395,6 +401,13 @@ function renderAdminPage(users) {
       return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
     }
 
+    function formatDateTime(isoText) {
+      if (!isoText) return '-';
+      const date = new Date(isoText);
+      if (Number.isNaN(date.getTime())) return '-';
+      return date.toLocaleString();
+    }
+
     function isExpired(user) {
       if (!user.expireAt) return false;
       const t = Date.parse(user.expireAt);
@@ -446,12 +459,15 @@ function renderAdminPage(users) {
         return '<tr>'
           + '<td>' + u.id + '</td>'
           + '<td><input data-field="username" data-id="' + u.id + '" value="' + (u.username || '') + '" /></td>'
+          + '<td>' + (u.online ? '在线' : '离线') + '</td>'
+          + '<td>' + Number(u.activeConnections || 0) + '</td>'
+          + '<td>' + formatDateTime(u.lastActiveAt || u.lastSeenAt) + '</td>'
           + '<td><input data-field="authToken" data-id="' + u.id + '" value="' + (u.authToken || '') + '" /></td>'
           + '<td><input type="checkbox" data-field="enabled" data-id="' + u.id + '" ' + checked + ' /></td>'
           + '<td><input type="datetime-local" data-field="expireAt" data-id="' + u.id + '" value="' + expireAt + '" /></td>'
           + '<td><input data-field="note" data-id="' + u.id + '" value="' + (u.note || '') + '" /></td>'
           + '<td>'
-          + '<button data-action="save" data-id="' + u.id + '">保存</button> <button data-action="delete" data-id="' + u.id + '">删除</button>'
+          + '<button data-action="save" data-id="' + u.id + '">保存</button> <button data-action="delete" data-id="' + u.id + '">删除</button> <button data-action="export-client" data-id="' + u.id + '">导出client.json</button>'
           + '<div style="margin-top:6px;display:flex;gap:6px;align-items:center;">'
           + '<input data-field="extendValue" data-id="' + u.id + '" value="30" style="width:56px;" />'
           + '<select data-field="extendUnit" data-id="' + u.id + '" style="width:64px;">'
@@ -477,6 +493,29 @@ function renderAdminPage(users) {
       state.allUsers = Array.isArray(data.users) ? data.users : [];
       renderRowsAndPager();
     }
+
+    async function downloadClientConfig(id) {
+      const resp = await fetch('/api/users/' + encodeURIComponent(id) + '/client-config', { method: 'GET' });
+      if (!resp.ok) {
+        if (resp.status === 401) {
+          location.href = '/admin/login';
+          throw new Error('未登录或登录已过期');
+        }
+        const text = await resp.text();
+        throw new Error(text || ('HTTP ' + resp.status));
+      }
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const disposition = String(resp.headers.get('content-disposition') || '');
+      const match = /filename="([^"]+)"/.exec(disposition);
+      a.download = match && match[1] ? match[1] : ('client.' + id + '.json');
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    }
     document.addEventListener('click', async (event) => {
       const target = event.target;
       if (!target || !target.dataset) return;
@@ -499,6 +538,8 @@ function renderAdminPage(users) {
         } else if (action === 'delete') {
           await request('/api/users/' + id, { method: 'DELETE' });
           await reload();
+        } else if (action === 'export-client') {
+          await downloadClientConfig(id);
         } else if (action === 'extend' || action === 'extend7' || action === 'extend30') {
           const quickAmount = action === 'extend7' ? 7 : (action === 'extend30' ? 30 : null);
           const rawValue = quickAmount === null ? Number(rowValue(id, 'extendValue')) : quickAmount;
@@ -619,6 +660,15 @@ function renderAdminPage(users) {
     document.getElementById('save-config-btn').addEventListener('click', async () => {
       try {
         await saveServerConfig();
+      } catch (err) {
+        alert(err.message);
+      }
+    });
+    document.getElementById('restart-server-btn').addEventListener('click', async () => {
+      const ok = confirm('确认重启 server 服务？连接会短暂中断。');
+      if (!ok) return;
+      try {
+        await restartServerService();
       } catch (err) {
         alert(err.message);
       }
