@@ -4,6 +4,7 @@
   "upstream": {
     "host": "206.119.179.201",
     "port": 6666,
+    "path": "/proxy-v2",
     "serverName": "zyko2.online",
     "authToken": "change-me-strong-token",
     "rejectUnauthorized": true
@@ -15,7 +16,7 @@
   "socksListenBacklog": 4096,
   "upstreamConnectTimeoutMs": 8000,
   "streamResponseTimeoutMs": 10000,
-  "streamIdleTimeoutMs": 120000,
+  "streamIdleTimeoutMs": 300000,
   "localSocketKeepAliveInitialDelayMs": 30000,
   "localSocketIdleTimeoutMs": 120000,
   "localAuth": {

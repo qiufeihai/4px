@@ -128,6 +128,32 @@
       white-space: pre-wrap;
       word-break: break-word;
     }
+    .status-summary {
+      margin-bottom: 8px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 8px;
+      font-size: 12px;
+      color: var(--muted);
+      background: #fafbff;
+      line-height: 1.4;
+      word-break: break-word;
+    }
+    .status-summary-ok {
+      border-color: #86efac;
+      background: #f0fdf4;
+      color: #166534;
+    }
+    .status-summary-warn {
+      border-color: #fcd34d;
+      background: #fffbeb;
+      color: #92400e;
+    }
+    .status-summary-err {
+      border-color: #fca5a5;
+      background: #fef2f2;
+      color: #991b1b;
+    }
     .msg {
       margin-top: 10px;
       font-size: 13px;
@@ -216,12 +242,15 @@
         <div class="status-item" id="statusStarted">started: -</div>
         <div class="status-item" id="statusExited">exited: -</div>
         <div class="status-item" id="statusProxy">system proxy: -</div>
+        <div class="status-item" id="statusMuxConnected">mux connected: -</div>
+        <div class="status-item" id="statusMuxReconnect">mux reconnect: -</div>
       </div>
       <div class="row" style="margin-bottom: 8px;">
         <button id="btnRefreshStatus" class="secondary">刷新状态</button>
         <button id="btnRefreshLogs" class="secondary">刷新日志</button>
         <button id="btnClearLogs" class="secondary">清空日志</button>
       </div>
+      <div id="statusSummary" class="status-summary">summary: -</div>
       <div id="logs" class="logs"></div>
     </section>
   </div>
@@ -249,7 +278,10 @@
       config: document.getElementById("statusConfig"),
       started: document.getElementById("statusStarted"),
       exited: document.getElementById("statusExited"),
-      proxy: document.getElementById("statusProxy")
+      proxy: document.getElementById("statusProxy"),
+      muxConnected: document.getElementById("statusMuxConnected"),
+      muxReconnect: document.getElementById("statusMuxReconnect"),
+      statusSummary: document.getElementById("statusSummary")
     };
     let proxyState = "unknown";
 
@@ -432,6 +464,23 @@
       return "未知";
     }
 
+    function setSummaryTone(level) {
+      const el = ui.statusSummary;
+      if (!el) return;
+      el.classList.remove("status-summary-ok", "status-summary-warn", "status-summary-err");
+      if (level === "ok") {
+        el.classList.add("status-summary-ok");
+        return;
+      }
+      if (level === "warn") {
+        el.classList.add("status-summary-warn");
+        return;
+      }
+      if (level === "err") {
+        el.classList.add("status-summary-err");
+      }
+    }
+
     async function refreshProxyState(showToast) {
       const backend = api();
       if (!backend) {
@@ -486,6 +535,24 @@
         ui.config.textContent = "config: " + (s.configPath || "-");
         ui.started.textContent = "started: " + (s.lastStartedAt || "-");
         ui.exited.textContent = "exited: " + (s.lastExitedAt || "-");
+        ui.muxConnected.textContent = "mux connected: " + (s.muxConnected ? "yes" : "no");
+        ui.muxReconnect.textContent = "mux reconnect: " + String(s.muxReconnectTotal || 0) + (s.muxLastReconnectErr ? " | last error: " + s.muxLastReconnectErr : "");
+        ui.statusSummary.textContent =
+          "summary: running=" + (s.running ? "yes" : "no") +
+          " | system_proxy=" + proxyStateLabel(proxyState) +
+          " | mux_connected=" + (s.muxConnected ? "yes" : "no") +
+          " | mux_reconnect=" + String(s.muxReconnectTotal || 0) +
+          (s.muxLastReconnectErr ? " | mux_last_error=" + s.muxLastReconnectErr : "") +
+          (s.lastError ? " | client_last_error=" + s.lastError : "");
+        if (s.lastError || s.muxLastReconnectErr) {
+          setSummaryTone("err");
+        } else if (s.running && !s.muxConnected) {
+          setSummaryTone("warn");
+        } else if (s.running && s.muxConnected) {
+          setSummaryTone("ok");
+        } else {
+          setSummaryTone("");
+        }
         ui.startBtn.disabled = !!s.running;
         ui.stopBtn.disabled = !s.running;
       } catch (err) {

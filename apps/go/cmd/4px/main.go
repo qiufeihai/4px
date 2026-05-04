@@ -3,7 +3,7 @@ package main
 import (
 	"os"
 
-	"docker-socks5-go-client/pkg/clientcore"
+	"github.com/qiufeihai/4px/apps/go/pkg/clientcore"
 )
 
 func main() {

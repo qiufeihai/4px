@@ -8,6 +8,7 @@
 - 客户端控制：启动/停止、运行状态、日志面板
 - 系统代理：查看状态、开启、关闭
 - 停止保护：支持“停止后自动关闭系统代理”（可选开关，默认开启）
+- 模式可控：可在 GUI 配置中选择 `upstream_path` 为 `/proxy-v2` 或 `/proxy`
 
 ## 目录
 
@@ -22,6 +23,12 @@
 - GUI 与 CLI 共享同一套 Go 核心能力：`apps/go/pkg/clientcore`
 - GUI 不再通过 `go run ./cmd/4px` 间接调用 CLI
 - `apps/go/cmd/4px` 现为薄入口，仅转调 `clientcore.RunCLI`
+
+## 模式说明
+
+- 默认模板使用 `upstream_path=/proxy-v2`（最高性能模式）。
+- 若需要兼容回退，可把 `upstream_path` 改为 `/proxy`。
+- 模式严格按配置生效，不做隐式自动回退。
 
 ## 本地运行（开发）
 

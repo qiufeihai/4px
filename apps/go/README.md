@@ -4,8 +4,17 @@ Go 版本客户端用于连接 Node `server`，并提供跨平台系统代理开
 
 协议兼容：
 - 上游协议：`TLS + HTTP/2`
-- 请求路径：`POST /proxy`
-- 关键请求头：`x-auth-token`、`x-target(base64url(host:port))`
+- 请求路径：`POST /proxy-v2`（默认）或 `POST /proxy`
+- 关键请求头：
+  - `proxy-v2`：`x-auth-token`、`x-4px-v2`、`x-4px-v2-mode: mux`
+  - `proxy`：`x-auth-token`、`x-target(base64url(host:port))`
+
+## 核心特性
+
+- 高性能默认：默认 `upstream_path=/proxy-v2`，走 mux 多路复用。
+- 显式回退：配置改为 `upstream_path=/proxy` 即可切回经典模式。
+- 架构复用：CLI 与 GUI 共享 `pkg/clientcore`，避免双实现漂移。
+- 跨平台代理：统一封装系统代理启停与状态查询（macOS/Windows/Linux）。
 
 ## 架构说明
 
@@ -76,6 +85,7 @@ go run ./cmd/4px -c config/client.json sysproxy-status
 - `socks_listen`：本地 SOCKS5 监听地址
 - `http_listen`：本地 HTTP 代理监听地址
 - `upstream_host` / `upstream_port`：远端 server 地址
+- `upstream_path`：`/proxy-v2`（高性能）或 `/proxy`（兼容回退）
 - `server_name`：TLS `ServerName`（SNI/证书校验）
 - `auth_token`：鉴权 token
 - `reject_unauthorized`：是否严格校验证书
@@ -84,6 +94,16 @@ go run ./cmd/4px -c config/client.json sysproxy-status
 - `response_header_timeout_ms`：响应头超时
 - `idle_timeout_ms`：空闲超时
 - `log_level`：日志等级（`DEBUG/INFO/WARN/ERROR`）
+
+## 模式说明
+
+- `proxy-v2`（默认）：
+  - 单主通道 mux 承载多路目标连接，吞吐与并发效率更高。
+- `proxy`：
+  - 每个目标连接对应独立上游 stream，链路更直观，便于最小化排障。
+
+注意：
+- 模式选择严格按配置执行，不做自动降级；是否回退由你显式改配置决定。
 
 ## 系统代理行为
 

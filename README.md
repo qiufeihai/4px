@@ -10,6 +10,50 @@
 - 你希望在本地用 `SOCKS5/HTTP` 代理方式接入，再由上游统一转发。
 - 你希望跨平台（Linux/macOS/Windows）运行客户端。
 
+## 项目特性
+
+- 双客户端实现：Node 与 Go 客户端都可对接同一 Node server。
+- 双代理入口：本地同时提供 `SOCKS5` 与 `HTTP` 代理监听。
+- 双模式转发：支持 `proxy`（经典单流）与 `proxy-v2`（mux 多路复用）。
+- 强一致配置：模式选择严格按配置生效，不做隐式协议降级。
+- 可观测性：内置运行指标、日志等级、连接状态与 GUI 状态展示。
+- 可运维性：Node server 支持 systemd 部署、管理端与配置在线维护。
+
+## 总体架构
+
+```text
+Browser/App
+  -> Local SOCKS5/HTTP Proxy (Node client or Go client)
+  -> TLS + HTTP/2 Tunnel
+  -> Node Server
+  -> Target Host:Port
+```
+
+- 数据面：`apps/node/src/server.js` 负责上游接入、鉴权、转发与指标。
+- 客户端面：`apps/node/src/client.js` 与 `apps/go/pkg/clientcore` 负责本地代理与上游隧道。
+- 控制面：`apps/node/src/admin`（Web 管理）与 `apps/go/gui`（桌面 GUI）提供运维入口。
+
+## 模式说明（`/proxy` vs `/proxy-v2`）
+
+- `proxy`：
+  - 每个目标连接对应上游独立 stream。
+  - 协议简单、兼容性强，便于排障与回滚。
+- `proxy-v2`：
+  - 基于 mux 在单主通道内承载多路子流。
+  - 减少建链与头部开销，吞吐与并发效率更高。
+
+默认策略：
+- 项目默认配置使用 `proxy-v2`（最高性能模式）。
+- 若需回退，显式把客户端配置改为 `proxy` 即可。
+- 模式选择严格按配置执行，不做“v2 失败自动回退 v1”。
+
+## 优势总结
+
+- 性能：`proxy-v2` 通过多路复用降低连接与协议开销。
+- 稳定：保留 `proxy` 作为可控回退路径，便于灰度与故障隔离。
+- 可维护：Go/CLI/GUI 复用 `clientcore`，Node 侧 server/client 职责清晰。
+- 易部署：Node server 可直接接入 systemd，客户端支持多平台运行。
+
 ## 仓库结构
 
 ```text

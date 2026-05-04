@@ -20,6 +20,7 @@ apps/go/*.exe
 apps/go/*.test
 apps/go/4px
 apps/go/client.json
+apps/go/gui/client.json
 apps/go/gui/gui
 apps/go/gui/build/bin/
 apps/go/gui/build/appicon.iconset/

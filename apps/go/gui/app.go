@@ -11,18 +11,21 @@ import (
 	"sync"
 	"time"
 
-	"docker-socks5-go-client/pkg/clientcore"
+	"github.com/qiufeihai/4px/apps/go/pkg/clientcore"
 )
 
 const maxLogLines = 2000
 
 type ClientStatus struct {
-	Running       bool   `json:"running"`
-	PID           int    `json:"pid"`
-	ConfigPath    string `json:"configPath"`
-	LastStartedAt string `json:"lastStartedAt"`
-	LastExitedAt  string `json:"lastExitedAt"`
-	LastError     string `json:"lastError"`
+	Running             bool   `json:"running"`
+	PID                 int    `json:"pid"`
+	ConfigPath          string `json:"configPath"`
+	LastStartedAt       string `json:"lastStartedAt"`
+	LastExitedAt        string `json:"lastExitedAt"`
+	LastError           string `json:"lastError"`
+	MuxConnected        bool   `json:"muxConnected"`
+	MuxReconnectTotal   uint64 `json:"muxReconnectTotal"`
+	MuxLastReconnectErr string `json:"muxLastReconnectErr"`
 }
 
 type App struct {
@@ -211,6 +214,10 @@ func (a *App) GetClientStatus() ClientStatus {
 		ConfigPath: a.lastConfigPath,
 		LastError:  a.lastError,
 	}
+	muxStats := clientcore.GetMuxRuntimeStats()
+	status.MuxConnected = muxStats.Connected
+	status.MuxReconnectTotal = muxStats.ReconnectTotal
+	status.MuxLastReconnectErr = muxStats.LastReconnectErr
 	status.PID = os.Getpid()
 	if !a.lastStartedAt.IsZero() {
 		status.LastStartedAt = a.lastStartedAt.Format(time.RFC3339)
@@ -344,14 +351,14 @@ func (a *App) readDefaultConfigTemplate() ([]byte, error) {
 		"http_listen":                 "127.0.0.1:7788",
 		"upstream_host":               "127.0.0.1",
 		"upstream_port":               6666,
-		"upstream_path":               "/proxy",
+		"upstream_path":               "/proxy-v2",
 		"server_name":                 "localhost",
 		"auth_token":                  "change-me",
 		"reject_unauthorized":         true,
 		"ca_file":                     "",
 		"upstream_connect_timeout_ms": 15000,
 		"response_header_timeout_ms":  10000,
-		"idle_timeout_ms":             120000,
+		"idle_timeout_ms":             300000,
 		"upstream_max_idle_conns":     512,
 		"upstream_max_idle_conns_per_host": 512,
 		"upstream_max_conns_per_host":      0,

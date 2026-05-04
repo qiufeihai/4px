@@ -42,6 +42,11 @@ const userRuntime = new Map();
 const stats = {
   streamTotal: 0,
   activeStreams: 0,
+  muxChannelOpenTotal: 0,
+  muxChannelActive: 0,
+  muxFrameInTotal: 0,
+  muxFrameOutTotal: 0,
+  muxBackpressurePauseTotal: 0,
   routeRejectedTotal: 0,
   authRejectedTotal: 0,
   targetParseFailTotal: 0,
@@ -51,12 +56,18 @@ const stats = {
   remoteIdleTimeoutTotal: 0,
   bufferOverflowTotal: 0
 };
+const MUX_FRAME_OPEN = 1;
+const MUX_FRAME_DATA = 2;
+const MUX_FRAME_CLOSE = 3;
+const MUX_FRAME_OPEN_RESULT = 4;
+const MUX_FRAME_OPEN_ERROR = 5;
+const EMPTY_BUFFER = Buffer.alloc(0);
 const loopDelay = monitorEventLoopDelay({ resolution: 20 });
 loopDelay.enable();
 
 setInterval(() => {
   logger.info(
-    `metrics stream_total=${stats.streamTotal} active_streams=${stats.activeStreams} route_reject=${stats.routeRejectedTotal} auth_reject=${stats.authRejectedTotal} target_parse_fail=${stats.targetParseFailTotal} remote_ok=${stats.remoteConnectSuccessTotal} remote_error=${stats.remoteConnectErrorTotal} remote_connect_timeout=${stats.remoteConnectTimeoutTotal} remote_idle_timeout=${stats.remoteIdleTimeoutTotal} buffer_overflow=${stats.bufferOverflowTotal} eventloop_p95_ms=${(loopDelay.percentile(95) / 1e6).toFixed(2)}`
+    `metrics stream_total=${stats.streamTotal} active_streams=${stats.activeStreams} mux_channel_open_total=${stats.muxChannelOpenTotal} mux_channel_active=${stats.muxChannelActive} mux_frame_in_total=${stats.muxFrameInTotal} mux_frame_out_total=${stats.muxFrameOutTotal} mux_backpressure_pause_total=${stats.muxBackpressurePauseTotal} route_reject=${stats.routeRejectedTotal} auth_reject=${stats.authRejectedTotal} target_parse_fail=${stats.targetParseFailTotal} remote_ok=${stats.remoteConnectSuccessTotal} remote_error=${stats.remoteConnectErrorTotal} remote_connect_timeout=${stats.remoteConnectTimeoutTotal} remote_idle_timeout=${stats.remoteIdleTimeoutTotal} buffer_overflow=${stats.bufferOverflowTotal} eventloop_p95_ms=${(loopDelay.percentile(95) / 1e6).toFixed(2)}`
   );
   loopDelay.reset();
 }, metricsIntervalMs).unref();
@@ -154,6 +165,305 @@ function parseTargetV2(headers) {
   return { host, port };
 }
 
+function parseTargetText(targetText) {
+  const text = String(targetText || '').trim();
+  const split = text.lastIndexOf(':');
+  if (split <= 0 || split >= text.length - 1) {
+    throw new Error('Invalid mux target');
+  }
+  let host = text.slice(0, split);
+  if (host.startsWith('[') && host.endsWith(']')) {
+    host = host.slice(1, -1);
+  }
+  const port = Number(text.slice(split + 1));
+  if (!host || !Number.isInteger(port) || port <= 0 || port > 65535) {
+    throw new Error('Invalid mux target port');
+  }
+  return { host, port };
+}
+
+function muxWriteFrame(stream, frameType, streamID, payload) {
+  const body = payload == null ? EMPTY_BUFFER : (Buffer.isBuffer(payload) ? payload : Buffer.from(payload));
+  const header = Buffer.allocUnsafe(9);
+  header.writeUInt8(frameType, 0);
+  header.writeUInt32BE(streamID >>> 0, 1);
+  header.writeUInt32BE(body.length >>> 0, 5);
+  stats.muxFrameOutTotal += 1;
+  stream.cork();
+  const okHeader = stream.write(header);
+  const okBody = body.length > 0 ? stream.write(body) : true;
+  stream.uncork();
+  return okHeader && okBody;
+}
+
+function handleProxyV2MuxStream(stream, authUser, remotePeer, streamId) {
+  logger.info(`mux stream accepted, peer=${remotePeer}, stream=${streamId}, user=${authUser.username}`);
+  stream.respond({ ':status': 200 });
+  const remotes = new Map();
+  const incomingChunks = [];
+  let incomingOffset = 0;
+  let incomingTotal = 0;
+  let writableBlocked = false;
+  const pausedRemotes = new Set();
+  const outboundQueue = [];
+  let outboundQueuedBytes = 0;
+  let flushScheduled = false;
+  const MAX_INCOMING_BUFFER = Math.max(maxBufferedBytes * 2, 1024 * 1024);
+  const MAX_OUTGOING_BUFFER = Math.max(maxBufferedBytes * 2, 1024 * 1024);
+
+  const setWritableBlocked = (blocked) => {
+    if (blocked) {
+      if (!writableBlocked) {
+        writableBlocked = true;
+        stats.muxBackpressurePauseTotal += 1;
+      }
+      remotes.forEach((remote, rid) => {
+        if (!remote.destroyed) pauseRemote(rid);
+      });
+      return;
+    }
+    writableBlocked = false;
+    resumePausedRemotes();
+  };
+
+  const queueIncoming = (chunk) => {
+    if (!chunk || chunk.length === 0) return;
+    incomingChunks.push(chunk);
+    incomingTotal += chunk.length;
+  };
+
+  const compactIncoming = () => {
+    if (incomingOffset === 0) return;
+    if (incomingOffset >= incomingChunks.length) {
+      incomingChunks.length = 0;
+      incomingOffset = 0;
+      return;
+    }
+    incomingChunks.splice(0, incomingOffset);
+    incomingOffset = 0;
+  };
+
+  const readIncoming = (n) => {
+    if (incomingTotal < n) return null;
+    const out = Buffer.allocUnsafe(n);
+    let written = 0;
+    while (written < n) {
+      const head = incomingChunks[incomingOffset];
+      const need = n - written;
+      if (head.length <= need) {
+        head.copy(out, written);
+        written += head.length;
+        incomingOffset += 1;
+      } else {
+        head.copy(out, written, 0, need);
+        incomingChunks[incomingOffset] = head.subarray(need);
+        written += need;
+      }
+    }
+    incomingTotal -= n;
+    if (incomingOffset > 64 || incomingOffset >= incomingChunks.length) {
+      compactIncoming();
+    }
+    return out;
+  };
+
+  const pauseRemote = (id) => {
+    const remote = remotes.get(id);
+    if (!remote || remote.destroyed) return;
+    remote.pause();
+    pausedRemotes.add(id);
+  };
+
+  const resumePausedRemotes = () => {
+    pausedRemotes.forEach((id) => {
+      const remote = remotes.get(id);
+      if (remote && !remote.destroyed) remote.resume();
+    });
+    pausedRemotes.clear();
+  };
+
+  const closeRemote = (id) => {
+    const remote = remotes.get(id);
+    if (!remote) return;
+    if (stats.muxChannelActive > 0) stats.muxChannelActive -= 1;
+    remotes.delete(id);
+    pausedRemotes.delete(id);
+    markUserConnectionClose(authUser);
+    if (!remote.destroyed) remote.destroy();
+  };
+
+  const closeAll = () => {
+    remotes.forEach((remote, id) => {
+      remotes.delete(id);
+      pausedRemotes.delete(id);
+      markUserConnectionClose(authUser);
+      if (!remote.destroyed) remote.destroy();
+    });
+  };
+
+  const sendFrame = (frameType, id, payload) => {
+    if (stream.destroyed) return false;
+    const body = payload == null ? EMPTY_BUFFER : (Buffer.isBuffer(payload) ? payload : Buffer.from(payload));
+    const frameBytes = 9 + body.length;
+    outboundQueue.push({ frameType, id, body, frameBytes });
+    outboundQueuedBytes += frameBytes;
+    if (stream.writableLength + outboundQueuedBytes > MAX_OUTGOING_BUFFER) {
+      stats.bufferOverflowTotal += 1;
+      logger.warn(`mux stream buffer overflow, stream=${streamId}, bytes=${stream.writableLength + outboundQueuedBytes}, limit=${MAX_OUTGOING_BUFFER}`);
+      closeAll();
+      if (!stream.destroyed) stream.close();
+      return false;
+    }
+    scheduleFlush();
+    return !writableBlocked;
+  };
+
+  const flushOutboundQueue = () => {
+    if (stream.destroyed || outboundQueue.length === 0) return;
+    stream.cork();
+    let ok = true;
+    while (outboundQueue.length > 0) {
+      const item = outboundQueue.shift();
+      outboundQueuedBytes -= item.frameBytes;
+      ok = muxWriteFrame(stream, item.frameType, item.id, item.body) && ok;
+      if (!ok) break;
+    }
+    stream.uncork();
+    if (!ok) {
+      setWritableBlocked(true);
+      return;
+    }
+    setWritableBlocked(false);
+    if (outboundQueue.length > 0) {
+      scheduleFlush();
+    }
+  };
+
+  const scheduleFlush = () => {
+    if (flushScheduled || stream.destroyed) return;
+    flushScheduled = true;
+    setImmediate(() => {
+      flushScheduled = false;
+      flushOutboundQueue();
+    });
+  };
+
+  const openRemote = (id, payload) => {
+    try {
+      const { host, port } = parseTargetText(payload.toString('utf8'));
+      const remote = net.createConnection({ host, port });
+      remotes.set(id, remote);
+      markUserConnectionOpen(authUser);
+      stats.muxChannelOpenTotal += 1;
+      stats.muxChannelActive += 1;
+
+      remote.setNoDelay(true);
+      remote.setKeepAlive(true, remoteKeepAliveInitialDelayMs);
+      if (remoteIdleTimeoutMs > 0) {
+        remote.setTimeout(remoteIdleTimeoutMs, () => {
+          stats.remoteIdleTimeoutTotal += 1;
+          logger.warn(`mux remote idle timeout, stream=${streamId}, channel=${id}, target=${host}:${port}`);
+          closeRemote(id);
+          sendFrame(MUX_FRAME_CLOSE, id, null);
+        });
+      }
+
+      const connectTimeoutTimer = setTimeout(() => {
+        stats.remoteConnectTimeoutTotal += 1;
+        logger.warn(`mux remote connect timeout, stream=${streamId}, channel=${id}, target=${host}:${port}`);
+        closeRemote(id);
+        sendFrame(MUX_FRAME_OPEN_ERROR, id, Buffer.from('connect timeout'));
+      }, remoteConnectTimeoutMs);
+
+      remote.once('connect', () => {
+        clearTimeout(connectTimeoutTimer);
+        stats.remoteConnectSuccessTotal += 1;
+        sendFrame(MUX_FRAME_OPEN_RESULT, id, null);
+      });
+      remote.on('data', (chunk) => {
+        markUserConnectionActive(authUser);
+        if (writableBlocked) pauseRemote(id);
+        const ok = sendFrame(MUX_FRAME_DATA, id, chunk);
+        if (!ok) pauseRemote(id);
+      });
+      remote.on('drain', () => {
+        if (!stream.destroyed && stream.isPaused()) stream.resume();
+      });
+      remote.on('close', () => {
+        closeRemote(id);
+        sendFrame(MUX_FRAME_CLOSE, id, null);
+      });
+      remote.on('error', (err) => {
+        stats.remoteConnectErrorTotal += 1;
+        logger.warn(`mux remote error, stream=${streamId}, channel=${id}, err=${err.message}`);
+        closeRemote(id);
+        sendFrame(MUX_FRAME_CLOSE, id, null);
+      });
+    } catch (e) {
+      sendFrame(MUX_FRAME_OPEN_ERROR, id, Buffer.from(String(e.message || e)));
+    }
+  };
+
+  const onFrame = (frameType, id, payload) => {
+    if (frameType === MUX_FRAME_OPEN) {
+      openRemote(id, payload);
+      return;
+    }
+    const remote = remotes.get(id);
+    if (!remote) return;
+    if (frameType === MUX_FRAME_DATA) {
+      markUserConnectionActive(authUser);
+      const ok = remote.write(payload);
+      if (!ok) stream.pause();
+      return;
+    }
+    if (frameType === MUX_FRAME_CLOSE) {
+      closeRemote(id);
+    }
+  };
+
+  stream.on('data', (chunk) => {
+    queueIncoming(chunk);
+    if (incomingTotal > MAX_INCOMING_BUFFER) {
+      stats.bufferOverflowTotal += 1;
+      logger.warn(`mux incoming buffer overflow, stream=${streamId}, bytes=${incomingTotal}, limit=${MAX_INCOMING_BUFFER}`);
+      closeAll();
+      if (!stream.destroyed) stream.close();
+      return;
+    }
+    while (incomingTotal >= 9) {
+      const header = readIncoming(9);
+      if (!header) break;
+      const frameType = header.readUInt8(0);
+      const id = header.readUInt32BE(1);
+      const payloadLen = header.readUInt32BE(5);
+      if (incomingTotal < payloadLen) {
+        // Put header back in front when payload is incomplete.
+        incomingChunks.splice(incomingOffset, 0, header);
+        incomingTotal += 9;
+        break;
+      }
+      const payload = payloadLen > 0 ? readIncoming(payloadLen) : EMPTY_BUFFER;
+      if (payloadLen > 0 && !payload) break;
+      stats.muxFrameInTotal += 1;
+      onFrame(frameType, id, payload);
+    }
+  });
+  stream.on('drain', () => {
+    setWritableBlocked(false);
+    flushOutboundQueue();
+  });
+
+  stream.on('close', () => {
+    if (stats.activeStreams > 0) stats.activeStreams -= 1;
+    outboundQueue.length = 0;
+    outboundQueuedBytes = 0;
+    setWritableBlocked(false);
+    closeAll();
+  });
+  stream.on('error', () => closeAll());
+}
+
 const server = http2.createSecureServer({
   key,
   cert,
@@ -180,6 +490,7 @@ server.on('stream', (stream, headers) => {
     const reqPath = String(headers[':path'] || '');
     const isProxyV1 = reqMethod === 'POST' && reqPath === '/proxy';
     const isProxyV2 = reqMethod === 'POST' && reqPath === '/proxy-v2' && enableProxyV2;
+    const isProxyV2Mux = isProxyV2 && String(headers['x-4px-v2-mode'] || '') === 'mux';
     if (!isProxyV1 && !isProxyV2) {
       stats.routeRejectedTotal += 1;
       logger.warn(`reject invalid route, peer=${remotePeer}, stream=${streamId}`);
@@ -197,6 +508,17 @@ server.on('stream', (stream, headers) => {
     }
     const authUser = authResult.user;
     markUserSeen(authUser);
+    if (isProxyV2 && String(headers['x-4px-v2'] || '') !== '1') {
+      stats.routeRejectedTotal += 1;
+      logger.warn(`reject v2 handshake, peer=${remotePeer}, stream=${streamId}`);
+      stream.respond({ ':status': 426 });
+      stream.end();
+      return;
+    }
+    if (isProxyV2Mux) {
+      handleProxyV2MuxStream(stream, authUser, remotePeer, streamId);
+      return;
+    }
 
     const { host, port } = isProxyV2 ? parseTargetV2(headers) : parseTarget(headers);
     markUserConnectionOpen(authUser);
