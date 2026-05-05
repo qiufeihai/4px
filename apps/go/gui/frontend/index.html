@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>4px Client GUI</title>
+  <title>4px Client</title>
   <style>
     :root {
       --bg: #f6f7fb;
@@ -169,8 +169,7 @@
 <body>
   <div class="container">
     <section class="card">
-      <h1 class="title">4px Client GUI</h1>
-      <p class="sub">配置路径自动选择：开发环境使用项目目录 `apps/go/config/client.json`，打包运行优先使用当前运行目录的 `client.json`。</p>
+      <h1 class="title">4px Client</h1>
       <div class="grid">
         <div>
           <label for="upstreamHost">upstream_host</label>
@@ -401,7 +400,7 @@
       } catch (err) {
         const msg = String(err || "");
         if (msg.includes("client is not running")) {
-          showMessage("Client 未在 GUI 内运行（GUI 仅能停止由 GUI 启动的实例）", false);
+          showMessage("Client 未在应用内运行（仅能停止由应用启动的实例）", false);
         } else {
           showMessage("停止失败: " + msg, true);
         }
