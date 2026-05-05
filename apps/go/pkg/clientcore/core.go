@@ -98,10 +98,10 @@ var (
 const defaultClientConfigTemplate = `{
   "socks_listen": "127.0.0.1:7777",
   "http_listen": "127.0.0.1:7788",
-  "upstream_host": "your-server-host",
+  "upstream_host": "your-server-ip",
   "upstream_port": 6666,
   "upstream_path": "/proxy-v2",
-  "server_name": "your-server-name",
+  "server_name": "your-domain.com",
   "auth_token": "change-me-strong-token",
   "reject_unauthorized": true,
   "ca_file": "",
