@@ -99,6 +99,35 @@ cd apps/go/gui
 - `apps/go/gui/releases/*.zip`
 - `apps/go/gui/releases/*.meta.txt`
 
+可选方案（当你本地没有 Windows 构建环境）：
+
+- 使用 GitHub Actions 工作流：`.github/workflows/gui-build.yml`
+- 在仓库页面 `Actions` -> `GUI Build Artifacts` -> `Run workflow`
+- 输入版本号（如 `v0.6.0`）后触发
+- 工作流会在 `macos-latest` 和 `windows-latest` 分别构建并上传 zip artifact
+- 你再从 workflow artifacts 下载并上传到同一个 GitHub Release
+
+触发细节（页面操作）：
+
+1. 打开 GitHub 仓库主页，点击 `Actions`。
+2. 左侧选择 `GUI Build Artifacts`。
+3. 点击右上角 `Run workflow`。
+4. 选择分支（建议 `main`）。
+5. 在 `version` 输入版本（如 `v0.6.0`），点击确认运行。
+6. 等待两个 job（macOS、Windows）都完成为绿色 `Success`。
+7. 进入该次 workflow run 页面，在 `Artifacts` 区域下载两个 zip 包。
+8. 把这两个 zip 上传到同一个 Release。
+
+常见问题：
+
+- 看不到 `Run workflow` 按钮：
+  - 确认你在仓库有写权限；
+  - 确认该 workflow 文件已经在默认分支；
+  - 确认仓库 `Actions` 未被禁用。
+- 只有一个平台成功：
+  - 先发布成功的平台包；
+  - 失败平台可重新 `Re-run failed jobs` 后补传。
+
 3. 在 GitHub 创建 Release
 
 - 打开仓库页面 -> `Releases` -> `Draft a new release`
@@ -106,9 +135,10 @@ cd apps/go/gui
 - `Target` 选择 `main`
 - `Release title` 填：`v0.6.0`
 - 描述区填本次变更摘要（可参考下方模板）
-- 上传两个文件：
-  - `4px-gui_v0.6.0_darwin_arm64_<gitsha>.zip`
-  - `4px-gui_v0.6.0_darwin_arm64_<gitsha>.meta.txt`
+- 上传发布文件：
+  - `4px-gui_v0.6.0_darwin_<arch>_<gitsha>.zip`
+  - `4px-gui_v0.6.0_windows_amd64_<gitsha>.zip`（若使用 workflow 构建）
+  - `4px-gui_v0.6.0_darwin_<arch>_<gitsha>.meta.txt`（本地脚本产物）
 - 点击 `Publish release`
 
 4. 发布后自检
@@ -132,6 +162,7 @@ cd apps/go/gui
 - Proxy health check passed (rate >= 99%).
 
 ### Artifacts
-- 4px-gui_v0.6.0_darwin_arm64_<gitsha>.zip
-- 4px-gui_v0.6.0_darwin_arm64_<gitsha>.meta.txt
+- 4px-gui_v0.6.0_darwin_<arch>_<gitsha>.zip
+- 4px-gui_v0.6.0_windows_amd64_<gitsha>.zip
+- 4px-gui_v0.6.0_darwin_<arch>_<gitsha>.meta.txt
 ```
