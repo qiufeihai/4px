@@ -73,7 +73,7 @@ $(go env GOPATH)/bin/wails build -platform windows/amd64
 - “停止 Client”仅控制由 GUI 启动的实例。
 - 若勾选“停止后自动关闭系统代理”，停止时会额外执行系统代理关闭。
 - 配置路径默认无需手填：
-  - 开发环境优先使用 `apps/go/client.json`。
+  - 开发环境优先使用 `apps/go/config/client.json`。
   - 编译后的 `.app` 优先使用当前运行目录的 `client.json`。
   - 若默认位置不存在 `client.json`，会自动创建一份模板配置。
 

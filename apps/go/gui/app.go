@@ -67,20 +67,21 @@ func (a *App) Startup(ctx context.Context) {
 }
 
 func (a *App) defaultClientConfigPath() string {
-	// Packaged app: always use current runtime directory.
-	// If client.json is missing, it will be auto-created there.
+	// Packaged app: use current runtime directory by default.
+	// Missing file will be auto-created there.
 	if a.packaged && a.runDir != "" {
 		return filepath.Join(a.runDir, "client.json")
 	}
+	// Dev run in repo: prefer apps/go/config/client.json.
 	if a.goClientDir != "" {
-		return filepath.Join(a.goClientDir, "client.json")
+		return filepath.Join(a.goClientDir, "config", "client.json")
 	}
-	// In packaged mode, use the runtime working directory by default.
-	// If cwd is "/" (common in GUI launchers), fallback to executable directory.
+	// Fallback to runtime directory when outside repo.
 	if a.runDir != "" {
 		return filepath.Join(a.runDir, "client.json")
 	}
-	return filepath.Join(a.goClientDir, "client.json")
+	// Last fallback.
+	return "client.json"
 }
 
 func (a *App) LoadConfig(path string) (map[string]any, error) {
