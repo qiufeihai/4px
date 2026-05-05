@@ -55,6 +55,13 @@ cd apps/go/gui
 $(go env GOPATH)/bin/wails build
 ```
 
+使用一键发布脚本（推荐）：
+
+```bash
+cd apps/go/gui
+./scripts/package_gui.sh --version v0.6.0
+```
+
 示例：在 macOS 构建 Windows（需要本机工具链满足条件）
 
 ```bash

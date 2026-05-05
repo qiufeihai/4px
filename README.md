@@ -149,3 +149,4 @@ go run ./cmd/4px -c config/client.json sysproxy-status
 - Node 详细说明：`apps/node/README.md`
 - Go 详细说明：`apps/go/README.md`
 - GUI 详细说明：`apps/go/gui/README.md`
+- GUI 发布规范：`docs/release-gui.md`
