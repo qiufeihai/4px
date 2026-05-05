@@ -20,10 +20,21 @@ apps/go/*.exe
 apps/go/*.test
 apps/go/4px
 apps/go/client.json
+apps/go/benchmarks_go/
 apps/go/gui/client.json
 apps/go/gui/gui
+apps/go/gui/releases/
 apps/go/gui/build/bin/
 apps/go/gui/build/appicon.iconset/
+
+# Benchmarks
+apps/node/benchmarks/
+
+# Android
+apps/mobile/android/.gradle/
+apps/mobile/android/local.properties
+apps/mobile/android/build/
+apps/mobile/android/app/build/
 
 # Temp
 tmp/

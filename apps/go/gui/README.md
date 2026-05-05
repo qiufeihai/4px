@@ -77,6 +77,16 @@ $(go env GOPATH)/bin/wails build -platform windows/amd64
   - 编译后的 `.app` 优先使用当前运行目录的 `client.json`。
   - 若默认位置不存在 `client.json`，会自动创建一份模板配置。
 
+健康检查（升级后建议执行一次）：
+
+```bash
+seq 200 | xargs -P 40 -I{} sh -c 'curl -sS -o /dev/null -x http://127.0.0.1:7788 https://206.119.179.201:8080/ --max-time 30; echo $?' | awk 'BEGIN{ok=0;fail=0}{if($1==0) ok++; else fail++} END {print "ok="ok,"fail="fail,"rate="(ok*100/(ok+fail))"%"}'
+```
+
+判定建议：
+- `rate >= 99%`：通过；
+- `rate < 99%`：先重启 GUI client 后复测，再看日志定位。
+
 ## 常见问题
 
 依赖下载若出现 `proxy.golang.org` 超时，可临时切换代理后重试：

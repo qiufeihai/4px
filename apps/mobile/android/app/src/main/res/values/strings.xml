@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">4px Mobile</string>
+    <string name="title_main">4px Android Client</string>
+    <string name="subtitle_main">Initial skeleton. VPN pipeline will be added next.</string>
+    <string name="btn_connect">Connect (Coming Soon)</string>
+    <string name="status_placeholder">Status: Idle</string>
+</resources>
+

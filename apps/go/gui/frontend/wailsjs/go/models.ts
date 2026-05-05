@@ -7,6 +7,9 @@ export namespace main {
 	    lastStartedAt: string;
 	    lastExitedAt: string;
 	    lastError: string;
+	    muxConnected: boolean;
+	    muxReconnectTotal: number;
+	    muxLastReconnectErr: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ClientStatus(source);
@@ -20,6 +23,9 @@ export namespace main {
 	        this.lastStartedAt = source["lastStartedAt"];
 	        this.lastExitedAt = source["lastExitedAt"];
 	        this.lastError = source["lastError"];
+	        this.muxConnected = source["muxConnected"];
+	        this.muxReconnectTotal = source["muxReconnectTotal"];
+	        this.muxLastReconnectErr = source["muxLastReconnectErr"];
 	    }
 	}
 
