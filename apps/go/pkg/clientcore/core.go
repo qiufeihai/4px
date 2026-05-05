@@ -106,7 +106,7 @@ const defaultClientConfigTemplate = `{
   "reject_unauthorized": true,
   "ca_file": "",
   "upstream_connect_timeout_ms": 15000,
-  "response_header_timeout_ms": 10000,
+  "response_header_timeout_ms": 30000,
   "idle_timeout_ms": 300000,
   "upstream_max_idle_conns": 512,
   "upstream_max_idle_conns_per_host": 512,
@@ -918,7 +918,7 @@ func loadConfig(path string) (*Config, error) {
 		cfg.UpstreamConnectTimeoutMS = 15000
 	}
 	if cfg.ResponseHeaderTimeoutMS <= 0 {
-		cfg.ResponseHeaderTimeoutMS = 10000
+		cfg.ResponseHeaderTimeoutMS = 30000
 	}
 	if cfg.IdleTimeoutMS <= 0 {
 		cfg.IdleTimeoutMS = 300000

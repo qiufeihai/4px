@@ -11,7 +11,7 @@ const { createSocks5Server } = require('./socks5');
 const cfg = loadConfig(path.resolve(__dirname, '../config/client.json'));
 const logger = createLogger('client', cfg.logLevel);
 const upstreamConnectTimeoutMs = cfg.upstreamConnectTimeoutMs || cfg.connectTimeoutMs || 10000;
-const streamResponseTimeoutMs = cfg.streamResponseTimeoutMs || cfg.requestTimeoutMs || 10000;
+const streamResponseTimeoutMs = cfg.streamResponseTimeoutMs || cfg.requestTimeoutMs || 30000;
 const streamIdleTimeoutMs = cfg.streamIdleTimeoutMs || 0;
 const localSocketKeepAliveInitialDelayMs = cfg.localSocketKeepAliveInitialDelayMs || 30000;
 const localSocketIdleTimeoutMs = cfg.localSocketIdleTimeoutMs || 0;
@@ -73,6 +73,8 @@ class MuxChannelStream extends Duplex {
     this.targetPort = targetPort;
     this.opened = false;
     this.openErr = null;
+    // OPEN 阶段超时时 stream 可能在业务层绑定 error 监听前被销毁，避免触发进程级未捕获异常。
+    this.on('error', () => {});
   }
 
   _read() {}

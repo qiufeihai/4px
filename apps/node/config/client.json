@@ -15,7 +15,7 @@
   "metricsIntervalMs": 30000,
   "socksListenBacklog": 4096,
   "upstreamConnectTimeoutMs": 8000,
-  "streamResponseTimeoutMs": 10000,
+  "streamResponseTimeoutMs": 30000,
   "streamIdleTimeoutMs": 300000,
   "localSocketKeepAliveInitialDelayMs": 30000,
   "localSocketIdleTimeoutMs": 120000,

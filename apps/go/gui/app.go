@@ -357,7 +357,7 @@ func (a *App) readDefaultConfigTemplate() ([]byte, error) {
 		"reject_unauthorized":         true,
 		"ca_file":                     "",
 		"upstream_connect_timeout_ms": 15000,
-		"response_header_timeout_ms":  10000,
+		"response_header_timeout_ms":  30000,
 		"idle_timeout_ms":             300000,
 		"upstream_max_idle_conns":     512,
 		"upstream_max_idle_conns_per_host": 512,
