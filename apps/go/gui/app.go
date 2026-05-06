@@ -366,6 +366,7 @@ func (a *App) readDefaultConfigTemplate() ([]byte, error) {
 		"upstream_disable_compression":     true,
 		"upstream_h2_read_idle_timeout_ms": 30000,
 		"upstream_h2_ping_timeout_ms":      10000,
+		"upstream_tls_session_cache_size":  256,
 		"log_level":                   "INFO",
 	}
 	raw, marshalErr := json.MarshalIndent(cfg, "", "  ")

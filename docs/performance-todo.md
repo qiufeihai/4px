@@ -38,6 +38,26 @@
 - 同并发下吞吐提升或 CPU 下降（至少一项明显改善）。
 - p99 尾延迟改善或稳定性提升（错误率下降）。
 
+## P1-S：服务端数据面优化（新增）
+
+- [ ] S1：`apps/node/src/server.js` 中 mux 出站队列从 `Array.shift()` 改为环形队列（降低高并发队列开销）。
+- [ ] S2：服务端 mux flush 增加“字节阈值 + 最长延迟”批次策略（减少小包写与事件循环抖动）。
+- [ ] S3：服务端 mux 帧解析路径减少内存拷贝与碎片（保持协议不变，仅优化实现）。
+- [ ] S4：服务端 backpressure 增加分档水位（按并发档控制 pause/resume 触发频率）。
+- [ ] S5：服务端多核利用（`cluster`/多 worker + 复用端口）并评估收益。
+- [ ] S6：服务端观测增强（补充 queue 长度、flush 批次大小、remote connect 耗时分位）。
+
+验收标准（P1-S）：
+- 成功率不下降（`>= 99%`），错误分类计数无异常增长。
+- `gradient + repeat=3` 中位值口径下，至少一个关键档位（c120 或 c160）`p95/p99` 改善且 CPU 不显著升高（建议 `<= +10%`）。
+- 若收益不一致或仅单档位偶发改善，默认回滚，保持稳定优先。
+
+执行顺序（P1-S）：
+1. 先做 S1（低风险，代码面最小，预期收益稳定）。
+2. 再做 S2（与 S1 组合验证）。
+3. 仅在 S1/S2 稳定后再推进 S3/S4。
+4. S5/S6 放在后半程，避免早期引入过多变量。
+
 ## P2：传输与协议能力扩展
 
 - [ ] 调研并试点 HTTP/3（QUIC）可选通道，不替换现有默认通道。（暂不实现：当前网络环境对 UDP 不友好，优先维持 H2/TCP 主链路；仅在网络环境变化后再评估）
@@ -466,5 +486,140 @@
 - p99（proxy-v2 中位值）: latency=1657.073/2445.859/3056.456；balanced=1646.141/2573.537/2892.663；throughput=1491.917/2740.315/2987.059
 - cpu/mem（proxy-v2 中位值）: latency CPU 4.622~4.844% 内存 21.995~24.46MB；balanced CPU 3.078~3.433% 内存 20.356~24.786MB；throughput CPU 2.556~2.9% 内存 21.931~24.524MB
 结论：balanced 作为默认档更稳妥（c120 p95 最优且 CPU 显著低于 latency）；throughput CPU 最低但 c120/c160 尾延迟波动偏大；latency 在 c160 p95 有优势但 CPU 成本最高。当前建议默认保持 balanced，按场景再切换 latency/throughput
+是否回滚：否
+```
+
+```text
+日期：2026-05-06
+负责人：AI
+改动项：balanced 档 streamDataQueue 试调（8 -> 12）并做 repeat=3 gradient 验收
+影响范围：apps/go/pkg/clientcore/core.go；apps/go/benchmarks_go/profile_balanced_q12_20260506
+压测命令：./benchmark_go_clientcore_modes.sh --profile gradient --repeat 3 --success-threshold 99 --p95-threshold-ms 8000 --kill-listeners --out apps/go/benchmarks_go/profile_balanced_q12_20260506
+结果（前 -> 后）：
+- success_rate: c80/c120/c160 下 proxy/proxy-v2 中位值均为 100%
+- p95（proxy-v2，中位值）: c80 1433.835 -> 1569.718（回退）；c120 2097.945 -> 2142.722（小幅回退）；c160 2678.913 -> 2964.558（明显回退）
+- p99（proxy-v2，中位值）: c80 1646.141 -> 1861.453（回退）；c120 2573.537 -> 2367.188（改善）；c160 2892.663 -> 3269.572（明显回退）
+- cpu/mem（proxy-v2，中位值）: CPU c80/c160 略升、c120 略升；RSS 基本持平
+结论：该调参在中高并发稳定性口径下收益不一致且回退更明显（尤其 c160），不适合保留
+是否回滚：是（已回滚到 streamDataQueue=8）
+```
+
+```text
+日期：2026-05-06
+负责人：AI
+改动项：balanced 档 flush 参数小步快筛（smoke+repeat=2，仅 proxy-v2）
+影响范围：apps/go/benchmarks_go/tune_smoke_base_20260506, apps/go/benchmarks_go/tune_smoke_a_20260506, apps/go/benchmarks_go/tune_smoke_b_20260506, apps/go/benchmarks_go/tune_smoke_c_20260506
+压测命令：./benchmark_go_clientcore_modes.sh --profile smoke --repeat 2 --modes proxy-v2 --success-threshold 99 --p95-threshold-ms 8000 --kill-listeners --out <dir>
+结果（前 -> 后）：
+- baseline（默认 balanced）: c40 p95/p99=822.235/919.106ms；c80 p95/p99=1392.809/1466.591ms；cpu=3.266%/3.075%
+- 候选A（notify=2048, burst=16384）: c40 p95/p99=717.704/789.113 改善，但 c80 p95/p99=1561.514/1728.077 明显回退，CPU 更高
+- 候选B（notify=6144, burst=32768）: c40/c80 的 p95/p99 均回退（c40 p95=1004.853；c80 p95=1452.152）
+- 候选C（max_delay_ms=3）: c40 p95 改善到 757.239，但 c80 p95/p99 回退到 1548.689/1711.854
+结论：候选参数均未在 c40/c80 同时稳定优于 baseline，不进入 gradient 全量；默认 balanced 参数保持不变
+是否回滚：是（client.json 已恢复到干净 balanced，仅保留 mux_tuning_profile）
+```
+
+```text
+日期：2026-05-06
+负责人：AI
+改动项：连接层参数快筛（upstream_max_conns_per_host: 0 -> 256，smoke+repeat=2，仅 proxy-v2）
+影响范围：apps/go/benchmarks_go/tune_conn_base_20260506, apps/go/benchmarks_go/tune_conn_256_20260506
+压测命令：./benchmark_go_clientcore_modes.sh --profile smoke --repeat 2 --modes proxy-v2 --success-threshold 99 --p95-threshold-ms 8000 --kill-listeners --out <dir>
+结果（前 -> 后）：
+- baseline(0): c40 p95/p99=747.022/923.132ms；c80 p95/p99=1503.598/1552.531ms；cpu=3.733%/3.466%
+- 候选(256): c40 p95/p99=822.304/931.064ms；c80 p95/p99=1561.521/1868.561ms；cpu=3.458%/3.133%
+- success_rate: 两组 c40/c80 中位值均为 100%
+结论：`256` 虽有轻微 CPU 下降，但 c40/c80 尾延迟均回退（尤其 c80 p99 明显变差），不进入 gradient 全量
+是否回滚：是（恢复 `upstream_max_conns_per_host=0`）
+```
+
+```text
+日期：2026-05-06
+负责人：AI
+改动项：连接层参数快筛（upstream_h2_read_idle_timeout_ms: 30000 -> 45000，smoke+repeat=2，仅 proxy-v2）
+影响范围：apps/go/benchmarks_go/tune_h2idle_base_20260506, apps/go/benchmarks_go/tune_h2idle_45000_20260506
+压测命令：./benchmark_go_clientcore_modes.sh --profile smoke --repeat 2 --modes proxy-v2 --success-threshold 99 --p95-threshold-ms 8000 --kill-listeners --out <dir>
+结果（前 -> 后）：
+- baseline(30000): c40 p95/p99=782.832/855.856ms；c80 p95/p99=1342.941/1576.415ms；cpu=3.625%/3.484%
+- 候选(45000): c40 p95/p99=833.083/955.678ms；c80 p95/p99=1544.041/1660.351ms；cpu=3.383%/3.225%
+- success_rate: 两组 c40/c80 中位值均为 100%
+结论：`45000` 在 c40/c80 的尾延迟均回退，虽然 CPU 略降但不满足稳定性优先原则，不进入 gradient 全量
+是否回滚：是（恢复 `upstream_h2_read_idle_timeout_ms=30000`）
+```
+
+```text
+日期：2026-05-06
+负责人：AI
+改动项：连接层参数试调（upstream_h2_ping_timeout_ms: 10000 -> 15000），先 smoke 再 gradient 全量验收
+影响范围：apps/go/benchmarks_go/tune_h2ping_base_20260506, apps/go/benchmarks_go/tune_h2ping_15000_20260506, apps/go/benchmarks_go/tune_h2ping_grad_base_20260506, apps/go/benchmarks_go/tune_h2ping_grad_15000_20260506
+压测命令：./benchmark_go_clientcore_modes.sh --profile smoke|gradient --repeat 2|3 --success-threshold 99 --p95-threshold-ms 8000 --kill-listeners --out <dir>
+结果（前 -> 后）：
+- smoke（仅 v2）: `15000` 在 c40/c80 的 p95/p99 相比 `10000` 有改善，进入 gradient
+- gradient（repeat=3，中位值，关注 v2）:
+  - c80: p95 1507.328 -> 1534.879（回退），p99 1790.867 -> 1820.023（回退）
+  - c120: p95 2317.28 -> 2047.405（改善），p99 2693.445 -> 2170.149（改善）
+  - c160: p95 2672.203 -> 2710.95（回退），p99 2721.505 -> 3051.545（明显回退）
+- success_rate: baseline/candidate 在 c80/c120/c160 下 proxy/proxy-v2 中位值均为 100%
+结论：`15000` 收益集中在 c120，但 c80/c160 尤其 c160 p99 回退明显，综合稳定性不满足保留标准
+是否回滚：是（恢复 `upstream_h2_ping_timeout_ms=10000`）
+```
+
+```text
+日期：2026-05-06
+负责人：AI
+改动项：S1 服务端 mux 出站队列优化（`Array.shift()` -> 数组头指针环形队列 + 条件压缩）
+影响范围：apps/node/src/server.js（handleProxyV2MuxStream 的 outboundQueue 路径）
+压测命令：node --check apps/node/src/server.js（已通过）；性能压测待部署到服务端后执行 gradient+repeat=3
+结果（前 -> 后）：
+- success_rate: 待补（需服务端部署后采集）
+- p50/p95/p99: 待补
+- cpu/mem: 待补
+- reconnect/errors: 待补
+结论：已完成低风险实现，协议行为保持不变，目标是降低高并发队列弹出开销；下一步进入部署后 A/B 验收
+是否回滚：否
+```
+
+```text
+日期：2026-05-06
+负责人：AI
+改动项：S2 服务端 mux flush 策略优化（字节阈值 + 最长延迟；控制帧优先立即 flush）
+影响范围：apps/node/src/server.js, apps/node/config/server.json, apps/node/config/server.local.json, apps/node/config/server.example.json
+压测命令：node --check apps/node/src/server.js（已通过）；性能压测待部署到服务端后执行 gradient+repeat=3
+结果（前 -> 后）：
+- success_rate: 待补（需服务端部署后采集）
+- p50/p95/p99: 待补
+- cpu/mem: 待补
+- reconnect/errors: 待补
+结论：已完成低风险实现，默认参数为 `muxFlushNotifyBytes=4096`、`muxFlushMaxDelayMs=2`；协议行为保持不变，目标是减少小包写与事件循环抖动
+是否回滚：否
+```
+
+```text
+日期：2026-05-06
+负责人：AI
+改动项：S3 服务端 mux 帧解析路径优化（去除 header 回插逻辑 + payload 优先零拷贝读取）
+影响范围：apps/node/src/server.js（handleProxyV2MuxStream 的 incoming 解析路径）
+压测命令：node --check apps/node/src/server.js（已通过）；性能压测待部署到服务端后执行 gradient+repeat=3
+结果（前 -> 后）：
+- success_rate: 待补（需服务端部署后采集）
+- p50/p95/p99: 待补
+- cpu/mem: 待补
+- reconnect/errors: 待补
+结论：已完成低风险实现，协议与帧格式保持不变；目标是减少入站帧解析过程中的内存拷贝与数组碎片操作
+是否回滚：否
+```
+
+```text
+日期：2026-05-06
+负责人：AI
+改动项：S4 服务端 backpressure 分档水位（高/低水位 hysteresis，降低 pause/resume 抖动）
+影响范围：apps/node/src/server.js, apps/node/config/server.json, apps/node/config/server.local.json, apps/node/config/server.example.json
+压测命令：node --check apps/node/src/server.js（已通过）；性能压测待部署到服务端后执行 gradient+repeat=3
+结果（前 -> 后）：
+- success_rate: 待补（需服务端部署后采集）
+- p50/p95/p99: 待补
+- cpu/mem: 待补
+- reconnect/errors: 待补
+结论：已完成低风险实现，默认参数为 `muxBackpressureHighWaterBytes=4194304`、`muxBackpressureLowWaterBytes=2097152`；协议行为保持不变，目标是降低高并发下 backpressure 抖动
 是否回滚：否
 ```
