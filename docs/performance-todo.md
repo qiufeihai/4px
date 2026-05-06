@@ -16,8 +16,8 @@
 
 ## P0：低风险高收益
 
-- [ ] 复核并统一关键超时：connect/header/idle/h2 read idle/h2 ping。
-- [ ] 复核连接池参数：`max_idle_conns`、`per_host`、`max_conns_per_host`。
+- [x] 复核并统一关键超时：connect/header/idle/h2 read idle/h2 ping。
+- [x] 复核连接池参数：`max_idle_conns`、`per_host`、`max_conns_per_host`。
 - [ ] 增强日志可读性：异常必须带关键上下文（目标、模式、错误码/状态码）。
 - [ ] 增强错误分类：把可重试错误与不可重试错误分开统计。
 
@@ -153,5 +153,20 @@
 - cpu/mem: 待补（需完整梯度与长稳验证）
 - reconnect/errors: 正常场景未触发重连；已支持记录连续失败次数、错误类别、backoff 毫秒
 结论：重连策略已落地且短测稳定；需要故障注入场景验证退避与错误分级效果
+是否回滚：否
+```
+
+```text
+日期：2026-05-06
+负责人：AI
+改动项：P0 参数复核与统一（Node idle timeout 默认值统一为 300000，并保留显式 0=关闭语义）
+影响范围：apps/node/src/client.js, apps/node/src/server.js
+压测命令：node --check apps/node/src/client.js && node --check apps/node/src/server.js（语法检查）
+结果（前 -> 后）：
+- success_rate: 待补（本次为配置/默认值统一，不涉及链路压测）
+- p50/p95/p99: 待补
+- cpu/mem: 待补
+- reconnect/errors: 待补
+结论：Go/Node 默认关键超时与连接池参数已对齐；Node 侧避免了 `||` 导致的 `0` 语义丢失
 是否回滚：否
 ```
