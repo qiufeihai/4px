@@ -442,6 +442,12 @@ function startAdminServer(options) {
         sendJson(res, 200, { ok: true, user });
         return;
       }
+      if (req.method === 'POST' && url.pathname.startsWith('/api/users/') && url.pathname.endsWith('/regenerate-token')) {
+        const id = url.pathname.replace('/api/users/', '').replace('/regenerate-token', '').replace(/\//g, '');
+        const user = userStore.regenerateToken(id);
+        sendJson(res, 200, { ok: true, user });
+        return;
+      }
       if (req.method === 'DELETE' && url.pathname.startsWith('/api/users/')) {
         const id = url.pathname.replace('/api/users/', '').replace(/\//g, '');
         const user = userStore.remove(id);

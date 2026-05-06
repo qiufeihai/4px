@@ -217,6 +217,22 @@ class UserStore {
     return { ...this.users[index] };
   }
 
+  regenerateToken(id) {
+    if (!this.enabled) throw new Error('multi-user mode is disabled');
+    const uid = String(id || '').trim();
+    const index = this.users.findIndex((item) => item.id === uid);
+    if (index < 0) throw new Error('user not found');
+
+    let nextToken = '';
+    do {
+      nextToken = this.createToken();
+    } while (this.users.some((item, i) => i !== index && item.authToken === nextToken));
+
+    this.users[index].authToken = nextToken;
+    this.save();
+    return { ...this.users[index] };
+  }
+
   remove(id) {
     if (!this.enabled) throw new Error('multi-user mode is disabled');
     const uid = String(id || '').trim();

@@ -522,7 +522,7 @@ function renderAdminPage(users) {
           + '<td><input type="datetime-local" data-field="expireAt" data-id="' + u.id + '" value="' + expireAt + '" /></td>'
           + '<td><input data-field="note" data-id="' + u.id + '" value="' + (u.note || '') + '" /></td>'
           + '<td>'
-          + '<button data-action="save" data-id="' + u.id + '">保存</button> <button data-action="delete" data-id="' + u.id + '">删除</button> <button data-action="export-client" data-id="' + u.id + '">导出client.json</button>'
+          + '<button data-action="save" data-id="' + u.id + '">保存</button> <button data-action="regen-token" data-id="' + u.id + '">重置Token</button> <button data-action="delete" data-id="' + u.id + '">删除</button> <button data-action="export-client" data-id="' + u.id + '">导出client.json</button>'
           + '<div style="margin-top:6px;display:flex;gap:6px;align-items:center;">'
           + '<input data-field="extendValue" data-id="' + u.id + '" value="30" style="width:56px;" />'
           + '<select data-field="extendUnit" data-id="' + u.id + '" style="width:64px;">'
@@ -589,6 +589,13 @@ function renderAdminPage(users) {
               expireAt: rowValue(id, 'expireAt') || null,
               note: rowValue(id, 'note')
             })
+          });
+          await reload();
+        } else if (action === 'regen-token') {
+          const ok = confirm('确认为该用户重新生成 AuthToken？旧 token 将立即失效。');
+          if (!ok) return;
+          await request('/api/users/' + encodeURIComponent(id) + '/regenerate-token', {
+            method: 'POST'
           });
           await reload();
         } else if (action === 'delete') {
