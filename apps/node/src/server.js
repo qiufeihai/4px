@@ -224,8 +224,7 @@ function handleProxyV2MuxStream(stream, authUser, remotePeer, streamId) {
   logger.info(`mux stream accepted, peer=${remotePeer}, stream=${streamId}, user=${authUser.username}`);
   stream.respond({ ':status': 200 });
   const remotes = new Map();
-  const incomingChunks = [];
-  let incomingOffset = 0;
+  let incomingBuffer = EMPTY_BUFFER;
   let incomingTotal = 0;
   let writableBlocked = false;
   const pausedRemotes = new Set();
@@ -254,100 +253,29 @@ function handleProxyV2MuxStream(stream, authUser, remotePeer, streamId) {
 
   const queueIncoming = (chunk) => {
     if (!chunk || chunk.length === 0) return;
-    incomingChunks.push(chunk);
-    incomingTotal += chunk.length;
-  };
-
-  const compactIncoming = () => {
-    if (incomingOffset === 0) return;
-    if (incomingOffset >= incomingChunks.length) {
-      incomingChunks.length = 0;
-      incomingOffset = 0;
-      return;
-    }
-    incomingChunks.splice(0, incomingOffset);
-    incomingOffset = 0;
+    incomingBuffer = incomingBuffer.length === 0 ? chunk : Buffer.concat([incomingBuffer, chunk]);
+    incomingTotal = incomingBuffer.length;
   };
 
   const discardIncoming = (n) => {
     if (incomingTotal < n) return false;
-    let remain = n;
-    while (remain > 0) {
-      const head = incomingChunks[incomingOffset];
-      if (head.length <= remain) {
-        remain -= head.length;
-        incomingOffset += 1;
-      } else {
-        incomingChunks[incomingOffset] = head.subarray(remain);
-        remain = 0;
-      }
-    }
-    incomingTotal -= n;
-    if (incomingOffset > 64 || incomingOffset >= incomingChunks.length) {
-      compactIncoming();
-    }
+    incomingBuffer = incomingBuffer.subarray(n);
+    incomingTotal = incomingBuffer.length;
     return true;
   };
 
   const readIncoming = (n) => {
     if (n === 0) return EMPTY_BUFFER;
     if (incomingTotal < n) return null;
-    const first = incomingChunks[incomingOffset];
-    if (first.length >= n) {
-      const out = first.subarray(0, n);
-      if (first.length === n) {
-        incomingOffset += 1;
-      } else {
-        incomingChunks[incomingOffset] = first.subarray(n);
-      }
-      incomingTotal -= n;
-      if (incomingOffset > 64 || incomingOffset >= incomingChunks.length) {
-        compactIncoming();
-      }
-      return out;
-    }
-    const out = Buffer.allocUnsafe(n);
-    let written = 0;
-    while (written < n) {
-      const head = incomingChunks[incomingOffset];
-      const need = n - written;
-      if (head.length <= need) {
-        head.copy(out, written);
-        written += head.length;
-        incomingOffset += 1;
-      } else {
-        head.copy(out, written, 0, need);
-        incomingChunks[incomingOffset] = head.subarray(need);
-        written += need;
-      }
-    }
-    incomingTotal -= n;
-    if (incomingOffset > 64 || incomingOffset >= incomingChunks.length) {
-      compactIncoming();
-    }
+    const out = incomingBuffer.subarray(0, n);
+    incomingBuffer = incomingBuffer.subarray(n);
+    incomingTotal = incomingBuffer.length;
     return out;
   };
 
   const peekIncoming = (n) => {
     if (incomingTotal < n) return null;
-    const first = incomingChunks[incomingOffset];
-    if (first.length >= n) {
-      return first.subarray(0, n);
-    }
-    const out = Buffer.allocUnsafe(n);
-    let copied = 0;
-    for (let i = incomingOffset; i < incomingChunks.length && copied < n; i += 1) {
-      const chunk = incomingChunks[i];
-      const need = n - copied;
-      if (chunk.length <= need) {
-        chunk.copy(out, copied);
-        copied += chunk.length;
-      } else {
-        chunk.copy(out, copied, 0, need);
-        copied += need;
-      }
-    }
-    return out;
+    return incomingBuffer.subarray(0, n);
   };
 
   const pauseRemote = (id) => {
