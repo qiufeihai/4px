@@ -19,8 +19,6 @@ const streamIdleTimeoutMs = Number.isFinite(Number(cfg.streamIdleTimeoutMs)) ? N
 const muxFlushNotifyBytes = Math.max(512, Number(cfg.muxFlushNotifyBytes || 4096));
 const muxFlushMaxDelayMs = Math.max(0, Number(cfg.muxFlushMaxDelayMs || 2));
 const maxBufferedBytes = cfg.maxBufferedBytes || 4 * 1024 * 1024;
-const muxBackpressureHighWaterBytes = Math.max(1024, Number(cfg.muxBackpressureHighWaterBytes || maxBufferedBytes));
-const muxBackpressureLowWaterBytes = Math.max(512, Number(cfg.muxBackpressureLowWaterBytes || Math.floor(muxBackpressureHighWaterBytes / 2)));
 const metricsIntervalMs = cfg.metricsIntervalMs || 30000;
 const listenBacklog = cfg.listenBacklog || 4096;
 const h2HeaderTableSize = Number(cfg.h2HeaderTableSize || 4096);
@@ -254,17 +252,6 @@ function handleProxyV2MuxStream(stream, authUser, remotePeer, streamId) {
     resumePausedRemotes();
   };
 
-  const updateWritableBackpressure = () => {
-    const pendingBytes = pendingOutboundBytes();
-    if (pendingBytes >= muxBackpressureHighWaterBytes) {
-      setWritableBlocked(true);
-      return;
-    }
-    if (writableBlocked && pendingBytes <= muxBackpressureLowWaterBytes) {
-      setWritableBlocked(false);
-    }
-  };
-
   const queueIncoming = (chunk) => {
     if (!chunk || chunk.length === 0) return;
     incomingChunks.push(chunk);
@@ -434,7 +421,6 @@ function handleProxyV2MuxStream(stream, authUser, remotePeer, streamId) {
       if (!stream.destroyed) stream.close();
       return false;
     }
-    updateWritableBackpressure();
     scheduleFlush(isControlFrame(frameType));
     return !writableBlocked;
   };
@@ -456,7 +442,7 @@ function handleProxyV2MuxStream(stream, authUser, remotePeer, streamId) {
       setWritableBlocked(true);
       return;
     }
-    updateWritableBackpressure();
+    setWritableBlocked(false);
     if (outboundQueueSize() > 0) {
       scheduleFlush();
     }
@@ -592,7 +578,7 @@ function handleProxyV2MuxStream(stream, authUser, remotePeer, streamId) {
     }
   });
   stream.on('drain', () => {
-    updateWritableBackpressure();
+    setWritableBlocked(false);
     flushOutboundQueue();
   });
 

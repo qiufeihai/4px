@@ -623,3 +623,19 @@
 结论：已完成低风险实现，默认参数为 `muxBackpressureHighWaterBytes=4194304`、`muxBackpressureLowWaterBytes=2097152`；协议行为保持不变，目标是降低高并发下 backpressure 抖动
 是否回滚：否
 ```
+
+```text
+日期：2026-05-06
+负责人：AI
+改动项：S1~S4 服务端优化部署后验收（gradient + repeat=3）
+影响范围：apps/go/benchmarks_go/server_s1_s4_postdeploy_20260506；对照基线 apps/go/benchmarks_go/profile_balanced_20260506
+压测命令：./benchmark_go_clientcore_modes.sh --profile gradient --repeat 3 --success-threshold 99 --p95-threshold-ms 8000 --kill-listeners --out apps/go/benchmarks_go/server_s1_s4_postdeploy_20260506
+结果（前 -> 后，关注 proxy-v2 中位值）：
+- success_rate: c80/c120/c160 均为 100%（proxy 与 v2）
+- c80: p95 1433.835 -> 1578.67（回退），p99 1646.141 -> 1824.238（回退）
+- c120: p95 2097.945 -> 2146.332（小幅回退），p99 2573.537 -> 2444.912（改善）
+- c160: p95 2678.913 -> 2908.512（明显回退），p99 2892.663 -> 3314.218（明显回退）
+- cpu/mem: v2 CPU 3.344/3.433/3.078 -> 3.189/3.211/3.344；RSS 20.356/23.302/24.786 -> 21.694/23.281/23.398MB
+结论：S1~S4 合并后稳定性（成功率）达标，但尾延迟收益不稳定，当前口径下不满足“可确认提升”；建议进入二分验证（优先回滚 S4，再看 S3）定位回退来源
+是否回滚：待确认（建议先临时回滚 S4 做 A/B）
+```

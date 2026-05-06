@@ -26,7 +26,5 @@
   "remoteKeepAliveInitialDelayMs": 30000,
   "streamIdleTimeoutMs": 300000,
   "muxFlushNotifyBytes": 4096,
-  "muxFlushMaxDelayMs": 2,
-  "muxBackpressureHighWaterBytes": 4194304,
-  "muxBackpressureLowWaterBytes": 2097152
+  "muxFlushMaxDelayMs": 2
 }
