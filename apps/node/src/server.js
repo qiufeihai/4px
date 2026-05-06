@@ -16,8 +16,6 @@ const remoteConnectTimeoutMs = cfg.remoteConnectTimeoutMs || cfg.connectTimeoutM
 const remoteIdleTimeoutMs = Number.isFinite(Number(cfg.remoteIdleTimeoutMs)) ? Number(cfg.remoteIdleTimeoutMs) : 300000;
 const remoteKeepAliveInitialDelayMs = cfg.remoteKeepAliveInitialDelayMs || 30000;
 const streamIdleTimeoutMs = Number.isFinite(Number(cfg.streamIdleTimeoutMs)) ? Number(cfg.streamIdleTimeoutMs) : 300000;
-const muxFlushNotifyBytes = Math.max(512, Number(cfg.muxFlushNotifyBytes || 4096));
-const muxFlushMaxDelayMs = Math.max(0, Number(cfg.muxFlushMaxDelayMs || 2));
 const maxBufferedBytes = cfg.maxBufferedBytes || 4 * 1024 * 1024;
 const metricsIntervalMs = cfg.metricsIntervalMs || 30000;
 const listenBacklog = cfg.listenBacklog || 4096;
@@ -224,7 +222,8 @@ function handleProxyV2MuxStream(stream, authUser, remotePeer, streamId) {
   logger.info(`mux stream accepted, peer=${remotePeer}, stream=${streamId}, user=${authUser.username}`);
   stream.respond({ ':status': 200 });
   const remotes = new Map();
-  let incomingBuffer = EMPTY_BUFFER;
+  const incomingChunks = [];
+  let incomingOffset = 0;
   let incomingTotal = 0;
   let writableBlocked = false;
   const pausedRemotes = new Set();
@@ -232,7 +231,6 @@ function handleProxyV2MuxStream(stream, authUser, remotePeer, streamId) {
   let outboundQueueHead = 0;
   let outboundQueuedBytes = 0;
   let flushScheduled = false;
-  let flushDelayTimer = null;
   const MAX_INCOMING_BUFFER = Math.max(maxBufferedBytes * 2, 1024 * 1024);
   const MAX_OUTGOING_BUFFER = Math.max(maxBufferedBytes * 2, 1024 * 1024);
 
@@ -253,29 +251,100 @@ function handleProxyV2MuxStream(stream, authUser, remotePeer, streamId) {
 
   const queueIncoming = (chunk) => {
     if (!chunk || chunk.length === 0) return;
-    incomingBuffer = incomingBuffer.length === 0 ? chunk : Buffer.concat([incomingBuffer, chunk]);
-    incomingTotal = incomingBuffer.length;
+    incomingChunks.push(chunk);
+    incomingTotal += chunk.length;
+  };
+
+  const compactIncoming = () => {
+    if (incomingOffset === 0) return;
+    if (incomingOffset >= incomingChunks.length) {
+      incomingChunks.length = 0;
+      incomingOffset = 0;
+      return;
+    }
+    incomingChunks.splice(0, incomingOffset);
+    incomingOffset = 0;
   };
 
   const discardIncoming = (n) => {
     if (incomingTotal < n) return false;
-    incomingBuffer = incomingBuffer.subarray(n);
-    incomingTotal = incomingBuffer.length;
+    let remain = n;
+    while (remain > 0) {
+      const head = incomingChunks[incomingOffset];
+      if (head.length <= remain) {
+        remain -= head.length;
+        incomingOffset += 1;
+      } else {
+        incomingChunks[incomingOffset] = head.subarray(remain);
+        remain = 0;
+      }
+    }
+    incomingTotal -= n;
+    if (incomingOffset > 64 || incomingOffset >= incomingChunks.length) {
+      compactIncoming();
+    }
     return true;
   };
 
   const readIncoming = (n) => {
     if (n === 0) return EMPTY_BUFFER;
     if (incomingTotal < n) return null;
-    const out = incomingBuffer.subarray(0, n);
-    incomingBuffer = incomingBuffer.subarray(n);
-    incomingTotal = incomingBuffer.length;
+    const first = incomingChunks[incomingOffset];
+    if (first.length >= n) {
+      const out = first.subarray(0, n);
+      if (first.length === n) {
+        incomingOffset += 1;
+      } else {
+        incomingChunks[incomingOffset] = first.subarray(n);
+      }
+      incomingTotal -= n;
+      if (incomingOffset > 64 || incomingOffset >= incomingChunks.length) {
+        compactIncoming();
+      }
+      return out;
+    }
+    const out = Buffer.allocUnsafe(n);
+    let written = 0;
+    while (written < n) {
+      const head = incomingChunks[incomingOffset];
+      const need = n - written;
+      if (head.length <= need) {
+        head.copy(out, written);
+        written += head.length;
+        incomingOffset += 1;
+      } else {
+        head.copy(out, written, 0, need);
+        incomingChunks[incomingOffset] = head.subarray(need);
+        written += need;
+      }
+    }
+    incomingTotal -= n;
+    if (incomingOffset > 64 || incomingOffset >= incomingChunks.length) {
+      compactIncoming();
+    }
     return out;
   };
 
   const peekIncoming = (n) => {
     if (incomingTotal < n) return null;
-    return incomingBuffer.subarray(0, n);
+    const first = incomingChunks[incomingOffset];
+    if (first.length >= n) {
+      return first.subarray(0, n);
+    }
+    const out = Buffer.allocUnsafe(n);
+    let copied = 0;
+    for (let i = incomingOffset; i < incomingChunks.length && copied < n; i += 1) {
+      const chunk = incomingChunks[i];
+      const need = n - copied;
+      if (chunk.length <= need) {
+        chunk.copy(out, copied);
+        copied += chunk.length;
+      } else {
+        chunk.copy(out, copied, 0, need);
+        copied += need;
+      }
+    }
+    return out;
   };
 
   const pauseRemote = (id) => {
@@ -328,14 +397,6 @@ function handleProxyV2MuxStream(stream, authUser, remotePeer, streamId) {
 
   const pendingOutboundBytes = () => stream.writableLength + outboundQueuedBytes;
 
-  const clearFlushDelayTimer = () => {
-    if (flushDelayTimer == null) return;
-    clearTimeout(flushDelayTimer);
-    flushDelayTimer = null;
-  };
-
-  const isControlFrame = (frameType) => frameType !== MUX_FRAME_DATA;
-
   const sendFrame = (frameType, id, payload) => {
     if (stream.destroyed) return false;
     const body = payload == null ? EMPTY_BUFFER : (Buffer.isBuffer(payload) ? payload : Buffer.from(payload));
@@ -349,7 +410,7 @@ function handleProxyV2MuxStream(stream, authUser, remotePeer, streamId) {
       if (!stream.destroyed) stream.close();
       return false;
     }
-    scheduleFlush(isControlFrame(frameType));
+    scheduleFlush();
     return !writableBlocked;
   };
 
@@ -376,30 +437,14 @@ function handleProxyV2MuxStream(stream, authUser, remotePeer, streamId) {
     }
   };
 
-  const scheduleFlush = (forceImmediate = false) => {
+  const scheduleFlush = () => {
     if (stream.destroyed) return;
-    const immediate = forceImmediate || outboundQueuedBytes >= muxFlushNotifyBytes || muxFlushMaxDelayMs <= 0;
-    if (immediate) {
-      if (flushScheduled) return;
-      clearFlushDelayTimer();
-      flushScheduled = true;
-      setImmediate(() => {
-        flushScheduled = false;
-        flushOutboundQueue();
-      });
-      return;
-    }
-    if (flushDelayTimer != null || flushScheduled) return;
-    flushDelayTimer = setTimeout(() => {
-      flushDelayTimer = null;
-      if (flushScheduled || stream.destroyed) return;
-      flushScheduled = true;
-      setImmediate(() => {
-        flushScheduled = false;
-        flushOutboundQueue();
-      });
-    }, muxFlushMaxDelayMs);
-    flushDelayTimer.unref();
+    if (flushScheduled) return;
+    flushScheduled = true;
+    setImmediate(() => {
+      flushScheduled = false;
+      flushOutboundQueue();
+    });
   };
 
   const openRemote = (id, payload) => {
@@ -515,7 +560,6 @@ function handleProxyV2MuxStream(stream, authUser, remotePeer, streamId) {
     outboundQueue.length = 0;
     outboundQueueHead = 0;
     outboundQueuedBytes = 0;
-    clearFlushDelayTimer();
     setWritableBlocked(false);
     closeAll();
   });

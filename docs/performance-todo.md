@@ -695,3 +695,19 @@ cd /Users/qiufeihai/github/4px/apps/go
 结论：在“已部署后有效数据”口径下，回滚 S4 后整体更稳，尤其 c160 p95 改善明显；建议保持 S4 回滚状态，下一步再评估是否对 S3 做二分
 是否回滚：是（S4 已回滚并通过部署后验收）
 ```
+
+```text
+日期：2026-05-06
+负责人：AI
+改动项：S3 二分验收（你已部署后执行；对比 S1~S3 与 S1~S2）
+影响范围：apps/go/benchmarks_go/server_s1_s2_postdeploy_valid_20260506；对照 apps/go/benchmarks_go/server_s1_s3_postdeploy_valid_20260506
+压测命令：./benchmark_go_clientcore_modes.sh --profile gradient --repeat 3 --success-threshold 99 --p95-threshold-ms 8000 --kill-listeners --out apps/go/benchmarks_go/server_s1_s2_postdeploy_valid_20260506
+结果（前 -> 后，前=S1~S3，后=S1~S2，关注 proxy-v2 中位值）：
+- success_rate: c80/c120/c160 均为 100%（proxy 与 v2）
+- c80: p95 1518.253 -> 1449.148（改善），p99 1732.157 -> 1773.875（小幅回退）
+- c120: p95 2202.506 -> 2137.034（改善），p99 2366.406 -> 2401.292（小幅回退）
+- c160: p95 2681.491 -> 3282.43（明显回退），p99 3318.143 -> 3431.856（回退）
+- cpu/mem(v2): CPU 3.033/3.2/3.044 -> 3.233/3.156/3.12；RSS 21.931/23.061/24.444 -> 21.866/22.969/24.146MB
+结论：S3 回退后在 c80/c120 有局部收益，但 c160 尾延迟明显劣化；按稳定优先口径，建议保留 S3（不回滚）
+是否回滚：否（S3 保留）
+```
