@@ -79,6 +79,22 @@ function renderAdminPage(users) {
     .metric-danger { color: #b91c1c; font-weight: 600; }
     .resource-section { margin-top: 10px; }
     .resource-section-title { font-size: 13px; font-weight: 600; color: #333; margin-top: 6px; }
+    .log-box {
+      margin-top: 8px;
+      border: 1px solid #e5e5e5;
+      border-radius: 6px;
+      background: #0f172a;
+      color: #e2e8f0;
+      padding: 10px;
+      min-height: 220px;
+      max-height: 360px;
+      overflow: auto;
+      font-size: 12px;
+      line-height: 1.45;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Courier New", monospace;
+    }
     textarea { width: 100%; box-sizing: border-box; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
     .tabs { display: flex; gap: 8px; margin-top: 12px; }
     .tab-btn { border: 1px solid #ddd; background: #fff; border-radius: 6px; padding: 6px 12px; cursor: pointer; }
@@ -161,6 +177,14 @@ function renderAdminPage(users) {
         <div class="resource-item"><div class="resource-title">进程 Heap</div><div class="resource-value" id="res-proc-heap">-</div></div>
         <div class="resource-item"><div class="resource-title">进程运行时长</div><div class="resource-value" id="res-proc-uptime">-</div></div>
       </div>
+    </div>
+    <div class="resource-section">
+      <div class="toolbar">
+        <strong>服务端日志（最近 300 行）</strong>
+        <button id="refresh-log-btn">刷新日志</button>
+        <span id="log-time">-</span>
+      </div>
+      <div id="server-log-box" class="log-box">加载中...</div>
     </div>
   </div>
   </div>
@@ -275,6 +299,33 @@ function renderAdminPage(users) {
         document.getElementById('resource-time').textContent = '更新时间：' + new Date().toLocaleTimeString();
       } catch (err) {
         document.getElementById('resource-time').textContent = '资源加载失败';
+      }
+    }
+
+    function formatLogLine(line) {
+      const text = String(line || '');
+      if (!text) return '';
+      return text;
+    }
+
+    async function loadServerLogs() {
+      try {
+        const data = await request('/api/system/logs?limit=300', { method: 'GET' });
+        const lines = Array.isArray(data.lines) ? data.lines : [];
+        const box = document.getElementById('server-log-box');
+        if (box) {
+          box.textContent = lines.map(formatLogLine).join('\n') || '暂无日志';
+          box.scrollTop = box.scrollHeight;
+        }
+        const logTime = document.getElementById('log-time');
+        if (logTime) {
+          logTime.textContent = '日志更新时间：' + new Date().toLocaleTimeString();
+        }
+      } catch (err) {
+        const box = document.getElementById('server-log-box');
+        if (box) box.textContent = '日志加载失败';
+        const logTime = document.getElementById('log-time');
+        if (logTime) logTime.textContent = '日志加载失败';
       }
     }
 
@@ -650,6 +701,9 @@ function renderAdminPage(users) {
     document.getElementById('refresh-resource-btn').addEventListener('click', () => {
       loadResources();
     });
+    document.getElementById('refresh-log-btn').addEventListener('click', () => {
+      loadServerLogs();
+    });
     document.getElementById('load-config-btn').addEventListener('click', async () => {
       try {
         await loadServerConfig();
@@ -682,6 +736,7 @@ function renderAdminPage(users) {
     switchTab(state.activeTab);
     renderRowsAndPager();
     loadResources();
+    loadServerLogs();
     loadServerConfig();
     setInterval(loadResources, 5000);
     reload();

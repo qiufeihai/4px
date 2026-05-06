@@ -3,6 +3,7 @@ const os = require('os');
 const fs = require('fs');
 const { spawn } = require('child_process');
 const { resolvePath } = require('../config');
+const { getRecentLogs } = require('../logger');
 const { renderAdminPage, renderLoginPage } = require('./page');
 
 function parseJsonBody(req) {
@@ -313,6 +314,17 @@ function startAdminServer(options) {
               heapUsedText: formatBytes(processMem.heapUsed)
             }
           }
+        });
+        return;
+      }
+      if (req.method === 'GET' && url.pathname === '/api/system/logs') {
+        const limitRaw = Number(url.searchParams.get('limit') || 200);
+        const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(1000, Math.floor(limitRaw))) : 200;
+        const lines = getRecentLogs(limit);
+        sendJson(res, 200, {
+          ok: true,
+          lines,
+          count: lines.length
         });
         return;
       }

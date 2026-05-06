@@ -212,7 +212,7 @@
           </select>
         </div>
         <div class="full">
-          <label for="rawJson">完整 JSON（保存时优先使用此内容）</label>
+          <label for="rawJson">完整 JSON（用于补充未在表单展示的字段）</label>
           <textarea id="rawJson"></textarea>
         </div>
       </div>
@@ -315,6 +315,15 @@
       };
     }
 
+    function mergeFormIntoConfig(base) {
+      const out = (base && typeof base === "object" && !Array.isArray(base)) ? { ...base } : {};
+      const formCfg = pickConfigFromForm();
+      Object.keys(formCfg).forEach((k) => {
+        out[k] = formCfg[k];
+      });
+      return out;
+    }
+
     function fillFormFromConfig(cfg) {
       fields.upstreamHost.value = cfg.upstream_host || "";
       fields.upstreamPort.value = cfg.upstream_port || "";
@@ -344,14 +353,16 @@
 
     function buildConfigForSave() {
       const raw = (fields.rawJson.value || "").trim();
+      let base = {};
       if (raw) {
         const parsed = JSON.parse(raw);
         if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
           throw new Error("JSON 必须是对象");
         }
-        return parsed;
+        base = parsed;
       }
-      return pickConfigFromForm();
+      // 表单字段优先，JSON 用于补充表单未覆盖的高级字段。
+      return mergeFormIntoConfig(base);
     }
 
     async function saveConfig() {

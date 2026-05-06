@@ -727,3 +727,50 @@ cd /Users/qiufeihai/github/4px/apps/go
 结论：回退 S2 在低并发有收益，但中高并发（尤其 c160）尾延迟与 CPU 有回退；按稳定优先口径建议保留 S2
 是否回滚：否（S2 保留）
 ```
+
+```text
+日期：2026-05-06
+负责人：AI
+改动项：S1 二分验收（你已部署后执行；对比 S1~S2~S3 与 S2~S3）
+影响范围：apps/go/benchmarks_go/server_s2_s3_no_s1_postdeploy_valid_20260506；对照 apps/go/benchmarks_go/server_s1_s3_postdeploy_valid_20260506
+压测命令：./benchmark_go_clientcore_modes.sh --profile gradient --repeat 3 --success-threshold 99 --p95-threshold-ms 8000 --kill-listeners --out apps/go/benchmarks_go/server_s2_s3_no_s1_postdeploy_valid_20260506
+结果（前 -> 后，前=S1~S2~S3，后=S2~S3，关注 proxy-v2 中位值）：
+- success_rate: c80/c120/c160 均为 100%（proxy 与 v2）
+- c80: p95 1518.253 -> 1513.845（基本持平），p99 1732.157 -> 1806.786（回退）
+- c120: p95 2202.506 -> 2171.168（改善），p99 2366.406 -> 2292.024（改善）
+- c160: p95 2681.491 -> 2722.195（小幅回退），p99 3318.143 -> 2987.772（明显改善）
+- cpu/mem(v2): CPU 3.2/3.044 -> 3.467/3.289；RSS 23.061/24.444 -> 23.068/24.877MB（c120/c160）
+结论：回退 S1 后 c120 与 c160 的尾延迟整体更优（尤其 c160 p99 明显改善），但 CPU 略升；按稳定优先与尾延迟权重，建议回滚 S1
+是否回滚：是（建议保持 S1 回滚状态）
+```
+
+```text
+日期：2026-05-06
+负责人：AI
+改动项：最终确认（全量 proxy + proxy-v2，S1 回滚 + S2/S3 保留 + S4 回滚）
+影响范围：apps/go/benchmarks_go/server_final_confirm_s2_s3_20260506；对照 apps/go/benchmarks_go/server_s2_s3_no_s1_postdeploy_valid_20260506
+压测命令：./benchmark_go_clientcore_modes.sh --profile gradient --repeat 3 --success-threshold 99 --p95-threshold-ms 8000 --kill-listeners --out apps/go/benchmarks_go/server_final_confirm_s2_s3_20260506
+结果（观察项）：
+- proxy-v2 success_rate: c80/c120/c160 中位值均为 100%
+- proxy c160 出现单轮异常（repeat3 success_rate=68%，含 502/empty reply/SSL EOF），中位值未被拉低
+- proxy-v2 中位值：c80 p95/p99=1720.325/2015.416，c120=2180.114/2351.19，c160=3001.448/3050.227
+- 与上一轮同版本相比，结果存在明显环境波动，不宜单轮直接作为回滚判断依据
+结论：全量复核通过阈值，但受单轮异常影响噪声偏大；需以 proxy-v2 专项复核作为最终确认依据
+是否回滚：否（维持 S1 回滚 + S2/S3 保留）
+```
+
+```text
+日期：2026-05-06
+负责人：AI
+改动项：最终确认补跑（proxy-v2 专项复核，排除 proxy 路径噪声）
+影响范围：apps/go/benchmarks_go/server_final_confirm_s2_s3_v2rerun_20260506；对照 apps/go/benchmarks_go/server_s2_s3_no_s1_postdeploy_valid_20260506
+压测命令：./benchmark_go_clientcore_modes.sh --profile gradient --repeat 3 --modes proxy-v2 --success-threshold 99 --p95-threshold-ms 8000 --kill-listeners --out apps/go/benchmarks_go/server_final_confirm_s2_s3_v2rerun_20260506
+结果（前 -> 后，前=上一轮同版本，后=本轮复核，关注 proxy-v2 中位值）：
+- success_rate: c80/c120/c160 均为 100%
+- c80: p95 1513.845 -> 1492.79（改善），p99 1806.786 -> 1785.217（改善）
+- c120: p95 2171.168 -> 2263.204（回退），p99 2292.024 -> 2446.959（回退）
+- c160: p95 2722.195 -> 2775.47（小幅回退），p99 2987.772 -> 2962.669（小幅改善）
+- cpu/mem(v2): CPU 3.467/3.289 -> 3.31/3.244；RSS 23.068/24.877 -> 23.372/24.854MB（c120/c160）
+结论：在无代码改动下仍有场景波动，但中高并发趋势未推翻既有二分结论；维持最终方案：S1 回滚、S2/S3 保留、S4 回滚
+是否回滚：否（最终方案不变）
+```

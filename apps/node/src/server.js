@@ -594,6 +594,37 @@ const server = http2.createSecureServer({
   }
 });
 
+function renderCamouflagePage() {
+  const now = new Date().toISOString();
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Service Online</title>
+  <style>
+    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f7f8fb; color: #111827; }
+    .wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 16px; }
+    .card { width: 100%; max-width: 520px; background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 18px; }
+    h1 { margin: 0 0 8px; font-size: 20px; }
+    p { margin: 6px 0; color: #4b5563; }
+    .ok { color: #047857; }
+    .meta { margin-top: 12px; font-size: 12px; color: #6b7280; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>Service Online</h1>
+      <p class="ok">Status: running</p>
+      <p>This endpoint is available.</p>
+      <div class="meta">timestamp: ${now}</div>
+    </div>
+  </div>
+</body>
+</html>`;
+}
+
 server.on('stream', (stream, headers) => {
   stats.streamTotal += 1;
   stats.activeStreams += 1;
@@ -602,6 +633,14 @@ server.on('stream', (stream, headers) => {
   try {
     const reqMethod = String(headers[':method'] || '');
     const reqPath = String(headers[':path'] || '');
+    if (reqMethod === 'GET' && reqPath === '/') {
+      stream.respond({
+        ':status': 200,
+        'content-type': 'text/html; charset=utf-8'
+      });
+      stream.end(renderCamouflagePage());
+      return;
+    }
     const isProxyV1 = reqMethod === 'POST' && reqPath === '/proxy';
     const isProxyV2 = reqMethod === 'POST' && reqPath === '/proxy-v2' && enableProxyV2;
     const isProxyV2Mux = isProxyV2 && String(headers['x-4px-v2-mode'] || '') === 'mux';

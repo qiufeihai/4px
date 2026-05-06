@@ -4,6 +4,8 @@ const LEVEL_PRIORITY = {
   WARN: 30,
   ERROR: 40
 };
+const LOG_BUFFER_MAX = 5000;
+const recentLogs = [];
 
 function normalizeLevel(level) {
   const key = String(level || 'INFO').toUpperCase();
@@ -17,6 +19,10 @@ function createLogger(moduleName, configuredLevel) {
   function output(level, message, extra) {
     if (LEVEL_PRIORITY[level] < currentPriority) return;
     const line = `[${moduleName}][${new Date().toISOString()}][${level}] ${message}`;
+    recentLogs.push(line + (extra === undefined ? '' : ` ${String(extra)}`));
+    if (recentLogs.length > LOG_BUFFER_MAX) {
+      recentLogs.splice(0, recentLogs.length - LOG_BUFFER_MAX);
+    }
     if (extra === undefined) {
       console.log(line);
       return;
@@ -33,6 +39,16 @@ function createLogger(moduleName, configuredLevel) {
   };
 }
 
+function getRecentLogs(limit) {
+  const n = Number(limit);
+  const take = Number.isFinite(n) && n > 0 ? Math.floor(n) : 200;
+  if (take >= recentLogs.length) {
+    return recentLogs.slice();
+  }
+  return recentLogs.slice(recentLogs.length - take);
+}
+
 module.exports = {
-  createLogger
+  createLogger,
+  getRecentLogs
 };
