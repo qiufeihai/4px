@@ -324,17 +324,24 @@ func GetSystemProxyStatus() (string, error) {
 		}
 		return b.String(), nil
 	case "windows":
+		const regPath = `HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings`
 		var b strings.Builder
-		out, err := runOutput("reg", "query", `HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings`, "/v", "ProxyEnable")
+		out, err := runOutput("reg", "query", regPath, "/v", "ProxyEnable")
 		if err != nil {
-			return "", err
+			// Value may be absent on clean systems; treat as disabled instead of hard-fail.
+			logf("WARN", "windows proxy status fallback ProxyEnable missing: %v", err)
+			b.WriteString("ProxyEnable    REG_DWORD    0x0\n")
+		} else {
+			b.WriteString(strings.TrimSpace(out) + "\n")
 		}
-		b.WriteString(strings.TrimSpace(out) + "\n")
-		out, err = runOutput("reg", "query", `HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings`, "/v", "ProxyServer")
+		out, err = runOutput("reg", "query", regPath, "/v", "ProxyServer")
 		if err != nil {
-			return "", err
+			// ProxyServer can be unset when proxy is disabled.
+			logf("WARN", "windows proxy status fallback ProxyServer missing: %v", err)
+			b.WriteString("ProxyServer    <not set>\n")
+		} else {
+			b.WriteString(strings.TrimSpace(out) + "\n")
 		}
-		b.WriteString(strings.TrimSpace(out) + "\n")
 		return b.String(), nil
 	case "linux":
 		var b strings.Builder

@@ -424,30 +424,27 @@
     function parseProxyState(rawText) {
       const text = String(rawText || "").toLowerCase();
       const compact = text.replace(/\s+/g, " ");
-      const disabledPatterns = [
-        "enabled: no",
-        "enabled : no",
-        "disabled",
-        "disable",
-        "state: off",
-        "state : off",
-        "off",
-        "none",
-        "direct",
-        "no"
+      // Windows: "ProxyEnable    REG_DWORD    0x0/0x1"
+      if (compact.includes("proxyenable")) {
+        if (compact.includes("0x1")) return "enabled";
+        if (compact.includes("0x0")) return "disabled";
+      }
+      // Use stricter matching to avoid false positive (e.g. "version" contains "on").
+      const disabledRules = [
+        /enabled\s*:\s*no\b/,
+        /state\s*:\s*off\b/,
+        /\bmode\s*:\s*none\b/,
+        /\bmode\s*:\s*direct\b/
       ];
-      if (disabledPatterns.some((p) => compact.includes(p))) {
+      if (disabledRules.some((re) => re.test(compact))) {
         return "disabled";
       }
-      const enabledPatterns = [
-        "enabled: yes",
-        "enabled : yes",
-        "enabled",
-        "manual",
-        "on",
-        "proxy=1"
+      const enabledRules = [
+        /enabled\s*:\s*yes\b/,
+        /\bmode\s*:\s*manual\b/,
+        /\bproxy\s*=\s*1\b/
       ];
-      if (enabledPatterns.some((p) => compact.includes(p))) {
+      if (enabledRules.some((re) => re.test(compact))) {
         return "enabled";
       }
       return "unknown";
