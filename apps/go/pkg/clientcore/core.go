@@ -62,9 +62,12 @@ type proxyRuntime struct {
 }
 
 type MuxRuntimeStats struct {
-	ReconnectTotal   uint64 `json:"reconnectTotal"`
-	LastReconnectErr string `json:"lastReconnectErr"`
-	Connected        bool   `json:"connected"`
+	ReconnectTotal            uint64 `json:"reconnectTotal"`
+	ReconnectConsecutiveFails uint64 `json:"reconnectConsecutiveFails"`
+	LastReconnectErr          string `json:"lastReconnectErr"`
+	LastReconnectClass        string `json:"lastReconnectClass"`
+	LastReconnectBackoffMS    int64  `json:"lastReconnectBackoffMs"`
+	Connected                 bool   `json:"connected"`
 }
 
 const (
@@ -73,6 +76,13 @@ const (
 	muxFrameClose      byte = 3
 	muxFrameOpenResult byte = 4
 	muxFrameOpenError  byte = 5
+
+	muxWriteBufferSize = 64 * 1024
+	muxFlushInterval   = 2 * time.Millisecond
+	muxStreamDataQueue = 8
+
+	muxReconnectBaseBackoff = 200 * time.Millisecond
+	muxReconnectMaxBackoff  = 5 * time.Second
 )
 
 var (
@@ -465,9 +475,17 @@ type muxClientRuntime struct {
 	everStarted      bool
 	startErr         error
 	reconnectTotal   uint64
+	reconnectFails   uint64
 	lastReconnectErr string
+	lastReconnectClass string
+	lastReconnectBackoff time.Duration
+	nextReconnectAttempt time.Time
 	streamW          *io.PipeWriter
+	streamBW         *bufio.Writer
 	streamR          io.ReadCloser
+	flushNotify      chan struct{}
+	stopFlush        chan struct{}
+	flushWG          sync.WaitGroup
 
 	nextID  atomic.Uint32
 	streams map[uint32]*muxStream
@@ -481,9 +499,17 @@ type muxStream struct {
 	pr *io.PipeReader
 	pw *io.PipeWriter
 
+	dataCh    chan streamDataChunk
+	writerDone chan struct{}
+
 	openOnce sync.Once
 	openCh   chan error
 	closeOnce sync.Once
+}
+
+type streamDataChunk struct {
+	data []byte
+	slot *[]byte
 }
 
 func (m *muxStream) Read(p []byte) (int, error) {
@@ -501,13 +527,65 @@ func (m *muxStream) Write(p []byte) (int, error) {
 }
 
 func (m *muxStream) Close() error {
-	m.closeOnce.Do(func() {
-		_ = m.parent.sendFrame(muxFrameClose, m.id, nil)
-		m.parent.removeStream(m.id)
-		_ = m.pw.Close()
-		_ = m.pr.Close()
-	})
+	m.closeWithError(nil, true)
 	return nil
+}
+
+func (m *muxStream) startWriter() {
+	go func() {
+		defer close(m.writerDone)
+		for chunk := range m.dataCh {
+			if len(chunk.data) == 0 {
+				putMuxPayloadBuffer(chunk.slot)
+				continue
+			}
+			if _, err := m.pw.Write(chunk.data); err != nil {
+				putMuxPayloadBuffer(chunk.slot)
+				for remain := range m.dataCh {
+					putMuxPayloadBuffer(remain.slot)
+				}
+				_ = m.pw.CloseWithError(err)
+				return
+			}
+			putMuxPayloadBuffer(chunk.slot)
+		}
+		_ = m.pw.Close()
+	}()
+}
+
+func (m *muxStream) queueData(payload []byte) error {
+	if len(payload) == 0 {
+		return nil
+	}
+	buf, slot := getMuxPayloadBuffer(len(payload))
+	copy(buf, payload)
+	chunk := streamDataChunk{
+		data: buf,
+		slot: slot,
+	}
+	select {
+	case m.dataCh <- chunk:
+		return nil
+	default:
+		putMuxPayloadBuffer(slot)
+		return errors.New("stream backpressure overflow")
+	}
+}
+
+func (m *muxStream) closeWithError(err error, sendClose bool) {
+	m.closeOnce.Do(func() {
+		if sendClose {
+			_ = m.parent.sendFrame(muxFrameClose, m.id, nil)
+		}
+		m.parent.removeStream(m.id)
+		if err != nil {
+			_ = m.pr.CloseWithError(err)
+		} else {
+			_ = m.pr.Close()
+		}
+		close(m.dataCh)
+		<-m.writerDone
+	})
 }
 
 func (m *muxStream) notifyOpen(err error) {
@@ -529,7 +607,10 @@ func (m *muxClientRuntime) Open(ctx context.Context, target string) (*muxStream,
 		pr:     pr,
 		pw:     pw,
 		openCh: make(chan error, 1),
+		dataCh: make(chan streamDataChunk, muxStreamDataQueue),
+		writerDone: make(chan struct{}),
 	}
+	ms.startWriter()
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
@@ -541,25 +622,19 @@ func (m *muxClientRuntime) Open(ctx context.Context, target string) (*muxStream,
 	m.mu.Unlock()
 
 	if err := m.sendFrame(muxFrameOpen, id, []byte(target)); err != nil {
-		m.removeStream(id)
-		_ = pw.CloseWithError(err)
-		_ = pr.Close()
+		ms.closeWithError(err, false)
 		return nil, err
 	}
 
 	select {
 	case err := <-ms.openCh:
 		if err != nil {
-			m.removeStream(id)
-			_ = pw.CloseWithError(err)
-			_ = pr.Close()
+			ms.closeWithError(err, false)
 			return nil, err
 		}
 		return ms, nil
 	case <-ctx.Done():
-		m.removeStream(id)
-		_ = pw.CloseWithError(ctx.Err())
-		_ = pr.Close()
+		ms.closeWithError(ctx.Err(), false)
 		return nil, ctx.Err()
 	}
 }
@@ -575,6 +650,7 @@ func (m *muxClientRuntime) start(ctx context.Context) error {
 		return err
 	}
 	isReconnectAttempt := m.everStarted
+	waitUntil := m.nextReconnectAttempt
 	m.started = true
 	m.closed = false
 	m.startErr = nil
@@ -586,6 +662,21 @@ func (m *muxClientRuntime) start(ctx context.Context) error {
 	}
 	m.everStarted = true
 	m.mu.Unlock()
+	if isReconnectAttempt && !waitUntil.IsZero() {
+		if delay := time.Until(waitUntil); delay > 0 {
+			logf("DEBUG", "mux reconnect backoff wait=%s", delay)
+			select {
+			case <-ctx.Done():
+				m.mu.Lock()
+				m.startErr = ctx.Err()
+				m.started = false
+				m.closed = true
+				m.mu.Unlock()
+				return ctx.Err()
+			case <-time.After(delay):
+			}
+		}
+	}
 	m.recordStats(func(s *MuxRuntimeStats) {
 		s.Connected = false
 		if isReconnectAttempt {
@@ -601,20 +692,8 @@ func (m *muxClientRuntime) start(ctx context.Context) error {
 		m.startErr = err
 		m.started = false
 		m.closed = true
-		if isReconnectAttempt {
-			m.lastReconnectErr = err.Error()
-		}
 		m.mu.Unlock()
-		m.recordStats(func(s *MuxRuntimeStats) {
-			s.Connected = false
-			if isReconnectAttempt {
-				s.LastReconnectErr = err.Error()
-				s.ReconnectTotal = m.reconnectTotalValue()
-			}
-		})
-		if isReconnectAttempt {
-			logf("WARN", "mux reconnect failed total=%d err=%v", m.reconnectTotalValue(), err)
-		}
+		m.markReconnectFailure(isReconnectAttempt, reconnectErrClass(err, "network"), err)
 		return err
 	}
 	req.Header.Set("x-auth-token", m.authToken)
@@ -627,6 +706,7 @@ func (m *muxClientRuntime) start(ctx context.Context) error {
 		m.mu.Lock()
 		m.startErr = err
 		m.mu.Unlock()
+		m.markReconnectFailure(isReconnectAttempt, reconnectErrClass(err, "network"), err)
 		return err
 	}
 	if resp.StatusCode != http.StatusOK {
@@ -637,36 +717,37 @@ func (m *muxClientRuntime) start(ctx context.Context) error {
 		m.startErr = err
 		m.started = false
 		m.closed = true
-		if isReconnectAttempt {
-			m.lastReconnectErr = err.Error()
-		}
 		m.mu.Unlock()
-		m.recordStats(func(s *MuxRuntimeStats) {
-			s.Connected = false
-			if isReconnectAttempt {
-				s.LastReconnectErr = err.Error()
-				s.ReconnectTotal = m.reconnectTotalValue()
-			}
-		})
-		if isReconnectAttempt {
-			logf("WARN", "mux reconnect failed total=%d err=%v", m.reconnectTotalValue(), err)
+		class := "network"
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+			class = "auth"
 		}
+		m.markReconnectFailure(isReconnectAttempt, class, err)
 		return err
 	}
 
 	m.mu.Lock()
 	m.streamW = pw
+	m.streamBW = bufio.NewWriterSize(pw, muxWriteBufferSize)
 	m.streamR = resp.Body
-	if isReconnectAttempt {
-		m.lastReconnectErr = ""
-	}
+	m.flushNotify = make(chan struct{}, 1)
+	m.stopFlush = make(chan struct{})
+	m.lastReconnectErr = ""
+	m.lastReconnectClass = ""
+	m.lastReconnectBackoff = 0
+	m.nextReconnectAttempt = time.Time{}
+	m.reconnectFails = 0
 	reconnectTotal := m.reconnectTotal
 	m.mu.Unlock()
+	m.startFlushLoop()
 	m.recordStats(func(s *MuxRuntimeStats) {
 		s.Connected = true
 		if isReconnectAttempt {
 			s.LastReconnectErr = ""
+			s.LastReconnectClass = ""
+			s.LastReconnectBackoffMS = 0
 			s.ReconnectTotal = reconnectTotal
+			s.ReconnectConsecutiveFails = 0
 		}
 	})
 	if isReconnectAttempt {
@@ -717,21 +798,24 @@ func (m *muxClientRuntime) dispatchFrame(frameType byte, streamID uint32, payloa
 		}
 		ms.notifyOpen(errors.New(msg))
 	case muxFrameData:
-		_, _ = ms.pw.Write(payload)
+		if err := ms.queueData(payload); err != nil {
+			ms.notifyOpen(err)
+			ms.closeWithError(err, true)
+		}
 	case muxFrameClose:
 		ms.notifyOpen(errors.New("stream closed"))
-		_ = ms.pw.Close()
-		m.removeStream(streamID)
+		ms.closeWithError(errors.New("stream closed"), false)
 	}
 }
 
 func (m *muxClientRuntime) sendFrame(frameType byte, streamID uint32, payload []byte) error {
 	m.mu.Lock()
-	if m.closed || m.streamW == nil {
+	if m.closed || m.streamBW == nil {
 		m.mu.Unlock()
 		return errors.New("mux not ready")
 	}
-	w := m.streamW
+	w := m.streamBW
+	flushNotify := m.flushNotify
 	m.mu.Unlock()
 
 	var header [9]byte
@@ -745,9 +829,22 @@ func (m *muxClientRuntime) sendFrame(frameType byte, streamID uint32, payload []
 		return err
 	}
 	if len(payload) == 0 {
-		return nil
+		return w.Flush()
 	}
-	return writeAll(w, payload)
+	if err := writeAll(w, payload); err != nil {
+		return err
+	}
+	// Control frames should be delivered promptly; data frames are batch-flushed.
+	if frameType != muxFrameData {
+		return w.Flush()
+	}
+	if flushNotify != nil {
+		select {
+		case flushNotify <- struct{}{}:
+		default:
+		}
+	}
+	return nil
 }
 
 func writeAll(w io.Writer, p []byte) error {
@@ -805,10 +902,19 @@ func (m *muxClientRuntime) closeAll(err error) {
 	}
 	m.streams = map[uint32]*muxStream{}
 	w := m.streamW
+	bw := m.streamBW
 	r := m.streamR
+	stopFlush := m.stopFlush
 	m.streamW = nil
+	m.streamBW = nil
 	m.streamR = nil
+	m.flushNotify = nil
+	m.stopFlush = nil
 	m.mu.Unlock()
+	if stopFlush != nil {
+		close(stopFlush)
+		m.flushWG.Wait()
+	}
 	m.recordStats(func(s *MuxRuntimeStats) {
 		s.Connected = false
 		if err != nil {
@@ -821,6 +927,11 @@ func (m *muxClientRuntime) closeAll(err error) {
 	}
 
 	if w != nil {
+		if bw != nil {
+			m.writeMu.Lock()
+			_ = bw.Flush()
+			m.writeMu.Unlock()
+		}
 		_ = w.CloseWithError(err)
 	}
 	if r != nil {
@@ -828,9 +939,47 @@ func (m *muxClientRuntime) closeAll(err error) {
 	}
 	for _, s := range streams {
 		s.notifyOpen(err)
-		_ = s.pw.CloseWithError(err)
-		_ = s.pr.Close()
+		s.closeWithError(err, false)
 	}
+}
+
+func (m *muxClientRuntime) startFlushLoop() {
+	m.mu.Lock()
+	stop := m.stopFlush
+	notify := m.flushNotify
+	m.mu.Unlock()
+	if stop == nil || notify == nil {
+		return
+	}
+	m.flushWG.Add(1)
+	go func() {
+		defer m.flushWG.Done()
+		ticker := time.NewTicker(muxFlushInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				_ = m.flushBuffered()
+			case <-notify:
+				_ = m.flushBuffered()
+			case <-stop:
+				_ = m.flushBuffered()
+				return
+			}
+		}
+	}()
+}
+
+func (m *muxClientRuntime) flushBuffered() error {
+	m.mu.Lock()
+	bw := m.streamBW
+	m.mu.Unlock()
+	if bw == nil {
+		return nil
+	}
+	m.writeMu.Lock()
+	defer m.writeMu.Unlock()
+	return bw.Flush()
 }
 
 func (m *muxClientRuntime) recordStats(update func(*MuxRuntimeStats)) {
@@ -843,6 +992,63 @@ func (m *muxClientRuntime) reconnectTotalValue() uint64 {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.reconnectTotal
+}
+
+func (m *muxClientRuntime) markReconnectFailure(isReconnectAttempt bool, class string, err error) {
+	if !isReconnectAttempt {
+		return
+	}
+	m.mu.Lock()
+	m.reconnectFails++
+	failures := m.reconnectFails
+	backoff := reconnectBackoffFor(class, failures)
+	m.lastReconnectErr = err.Error()
+	m.lastReconnectClass = class
+	m.lastReconnectBackoff = backoff
+	m.nextReconnectAttempt = time.Now().Add(backoff)
+	total := m.reconnectTotal
+	m.mu.Unlock()
+
+	m.recordStats(func(s *MuxRuntimeStats) {
+		s.Connected = false
+		s.LastReconnectErr = err.Error()
+		s.LastReconnectClass = class
+		s.LastReconnectBackoffMS = backoff.Milliseconds()
+		s.ReconnectTotal = total
+		s.ReconnectConsecutiveFails = failures
+	})
+	logf("WARN", "mux reconnect failed total=%d consecutive=%d class=%s backoff_ms=%d err=%v", total, failures, class, backoff.Milliseconds(), err)
+}
+
+func reconnectBackoffFor(class string, failures uint64) time.Duration {
+	shift := failures - 1
+	if shift > 5 {
+		shift = 5
+	}
+	backoff := muxReconnectBaseBackoff * time.Duration(1<<shift)
+	if backoff > muxReconnectMaxBackoff {
+		backoff = muxReconnectMaxBackoff
+	}
+	if class == "auth" || class == "tls" {
+		if backoff < 2*time.Second {
+			backoff = 2 * time.Second
+		}
+	}
+	return backoff
+}
+
+func reconnectErrClass(err error, fallback string) string {
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "x509") || strings.Contains(msg, "certificate") || strings.Contains(msg, "tls") {
+		return "tls"
+	}
+	if strings.Contains(msg, "unauthorized") || strings.Contains(msg, "forbidden") || strings.Contains(msg, "status=401") || strings.Contains(msg, "status=403") {
+		return "auth"
+	}
+	if strings.Contains(msg, "timeout") || strings.Contains(msg, "connection refused") || strings.Contains(msg, "reset by peer") || strings.Contains(msg, "broken pipe") {
+		return "network"
+	}
+	return fallback
 }
 
 func showSystemProxyStatus() error {

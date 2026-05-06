@@ -27,10 +27,10 @@
 
 ## P1：数据面优化（优先）
 
-- [ ] 优化 mux 帧收发策略（批量写、减少小包、减少无效 flush）。
-- [ ] 优化背压控制（慢消费者不拖垮整体通道）。
-- [ ] 优化 copy 路径与 buffer 复用，减少 GC 压力。
-- [ ] 优化重连策略（抖动退避、错误分级、可观测重连原因）。
+- [x] 优化 mux 帧收发策略（批量写、减少小包、减少无效 flush）。
+- [x] 优化背压控制（慢消费者不拖垮整体通道）。
+- [x] 优化 copy 路径与 buffer 复用，减少 GC 压力。
+- [x] 优化重连策略（抖动退避、错误分级、可观测重连原因）。
 
 验收标准（P1）：
 - 同并发下吞吐提升或 CPU 下降（至少一项明显改善）。
@@ -79,3 +79,79 @@
 是否回滚：
 ```
 
+## 执行记录
+
+```text
+日期：2026-05-05
+负责人：AI
+改动项：Go clientcore mux 写路径优化（bufio 缓冲 + 周期 flush + 控制帧立即 flush）
+影响范围：apps/go/pkg/clientcore/core.go（proxy-v2/mux 数据面）
+压测命令：待补（下一轮按 benchmark_go_clientcore_modes.sh 固化命令执行）
+结果（前 -> 后）：
+- success_rate: 待补
+- p50/p95/p99: 待补
+- cpu/mem: 待补
+- reconnect/errors: 待补
+结论：已完成代码级优化并通过 go build；性能收益待压测数据确认
+是否回滚：否
+```
+
+```text
+日期：2026-05-06
+负责人：AI
+改动项：修复 mux 写路径回归（sendFrame 中写锁重入导致 v2 卡死）
+影响范围：apps/go/pkg/clientcore/core.go（proxy-v2/mux 发送与 flush 路径）
+压测命令：./benchmark_go_clientcore_modes.sh --requests 200 --concurrency 80 --warmup 10 --modes proxy,proxy-v2 --success-threshold 99 --p95-threshold-ms 8000 --kill-listeners
+结果（前 -> 后）：
+- success_rate: proxy-v2 从 0%（回归）恢复至 100%（c=80）；proxy 本轮为 0%，疑似本地运行态干扰
+- p50/p95/p99: proxy-v2 为 1303.939/1491.195/1579.095 ms（c=80）
+- cpu/mem: 待补
+- reconnect/errors: proxy-v2 无错误；proxy 出现本地 7788 连接失败
+结论：已修复回归，proxy-v2 链路恢复；需要在更干净环境补跑完整梯度并记录最终对比数据
+是否回滚：否
+```
+
+```text
+日期：2026-05-06
+负责人：AI
+改动项：mux 背压控制（每 stream 有界队列 + 队列溢出快速失败，避免 read loop 被慢流阻塞）
+影响范围：apps/go/pkg/clientcore/core.go（muxStream queueData/closeWithError/dispatchFrame）
+压测命令：./benchmark_go_clientcore_modes.sh --requests 200 --concurrency 80 --warmup 10 --modes proxy,proxy-v2 --success-threshold 99 --p95-threshold-ms 8000 --kill-listeners
+结果（前 -> 后）：
+- success_rate: proxy=100%，proxy-v2=100%（c=80）
+- p50/p95/p99: proxy=1275.082/1396.176/1497.798 ms；proxy-v2=1184.771/1529.011/1550.869 ms
+- cpu/mem: 待补（本轮仅功能与时延快速验证）
+- reconnect/errors: 两模式均无错误
+结论：背压策略已生效且未引入明显功能回归；下一步继续做 copy 路径/重连策略优化并补完整梯度
+是否回滚：否
+```
+
+```text
+日期：2026-05-06
+负责人：AI
+改动项：copy 路径与 buffer 复用（stream 数据队列改为池化 chunk，复用 muxPayloadPool，减少每帧 make/copy 的临时对象）
+影响范围：apps/go/pkg/clientcore/core.go（muxStream.dataCh/queueData/startWriter）
+压测命令：./benchmark_go_clientcore_modes.sh --requests 200 --concurrency 80 --warmup 10 --modes proxy,proxy-v2 --success-threshold 99 --p95-threshold-ms 8000 --kill-listeners
+结果（前 -> 后）：
+- success_rate: proxy=100%，proxy-v2=100%（c=80）
+- p50/p95/p99: proxy=1302.388/1405.613/1425.865 ms；proxy-v2=1321.893/1436.299/1614.177 ms
+- cpu/mem: 待补（需在完整梯度+更长时段观察）
+- reconnect/errors: 两模式均无错误
+结论：池化改造已生效且稳定；短测未见功能回归，需补充长稳数据评估 GC/CPU 收益
+是否回滚：否
+```
+
+```text
+日期：2026-05-06
+负责人：AI
+改动项：重连策略优化（指数退避 + 错误分级 + 重连可观测字段）
+影响范围：apps/go/pkg/clientcore/core.go（mux start/markReconnectFailure/MuxRuntimeStats）
+压测命令：./benchmark_go_clientcore_modes.sh --requests 200 --concurrency 80 --warmup 10 --modes proxy,proxy-v2 --success-threshold 99 --p95-threshold-ms 8000 --kill-listeners
+结果（前 -> 后）：
+- success_rate: proxy=100%，proxy-v2=100%（c=80）
+- p50/p95/p99: proxy=1143.949/1422.321/1743.182 ms；proxy-v2=1300.832/1402.395/1454.581 ms
+- cpu/mem: 待补（需完整梯度与长稳验证）
+- reconnect/errors: 正常场景未触发重连；已支持记录连续失败次数、错误类别、backoff 毫秒
+结论：重连策略已落地且短测稳定；需要故障注入场景验证退避与错误分级效果
+是否回滚：否
+```
