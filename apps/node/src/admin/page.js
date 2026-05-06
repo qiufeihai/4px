@@ -314,7 +314,7 @@ function renderAdminPage(users) {
         const lines = Array.isArray(data.lines) ? data.lines : [];
         const box = document.getElementById('server-log-box');
         if (box) {
-          box.textContent = lines.map(formatLogLine).join('\n') || '暂无日志';
+          box.textContent = lines.map(formatLogLine).join('\\n') || '暂无日志';
           box.scrollTop = box.scrollHeight;
         }
         const logTime = document.getElementById('log-time');
