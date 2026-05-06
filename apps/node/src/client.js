@@ -52,7 +52,9 @@ const stats = {
   upstreamConnectFailTotal: 0,
   upstreamConnectTimeoutTotal: 0,
   streamResponseTimeoutTotal: 0,
-  streamIdleTimeoutTotal: 0
+  streamIdleTimeoutTotal: 0,
+  retryableErrorTotal: 0,
+  nonRetryableErrorTotal: 0
 };
 const muxState = {
   req: null,
@@ -113,10 +115,30 @@ loopDelay.enable();
 
 setInterval(() => {
   logger.info(
-    `metrics socks_total=${stats.socksConnectTotal} socks_fail=${stats.socksConnectFailed} active_streams=${stats.activeStreams} stream_opened=${stats.streamOpenedTotal} stream_closed=${stats.streamClosedTotal} stream_rejected=${stats.streamRejectedTotal} upstream_fail=${stats.upstreamConnectFailTotal} upstream_timeout=${stats.upstreamConnectTimeoutTotal} buffer_overflow=${stats.bufferOverflowTotal} stream_resp_timeout=${stats.streamResponseTimeoutTotal} stream_idle_timeout=${stats.streamIdleTimeoutTotal} eventloop_p95_ms=${(loopDelay.percentile(95) / 1e6).toFixed(2)}`
+    `metrics socks_total=${stats.socksConnectTotal} socks_fail=${stats.socksConnectFailed} active_streams=${stats.activeStreams} stream_opened=${stats.streamOpenedTotal} stream_closed=${stats.streamClosedTotal} stream_rejected=${stats.streamRejectedTotal} upstream_fail=${stats.upstreamConnectFailTotal} upstream_timeout=${stats.upstreamConnectTimeoutTotal} buffer_overflow=${stats.bufferOverflowTotal} stream_resp_timeout=${stats.streamResponseTimeoutTotal} stream_idle_timeout=${stats.streamIdleTimeoutTotal} retryable_err=${stats.retryableErrorTotal} non_retryable_err=${stats.nonRetryableErrorTotal} eventloop_p95_ms=${(loopDelay.percentile(95) / 1e6).toFixed(2)}`
   );
   loopDelay.reset();
 }, metricsIntervalMs).unref();
+
+function classifyClientError(err, fallback = 'retryable') {
+  const msg = String((err && (err.code || err.message)) || err || '').toLowerCase();
+  if (!msg) return fallback;
+  if (msg.includes('unauthorized') || msg.includes('forbidden') || msg.includes('auth') || msg.includes('status=401') || msg.includes('status=403')) {
+    return 'non-retryable';
+  }
+  if (msg.includes('econnreset') || msg.includes('etimedout') || msg.includes('timeout') || msg.includes('econnrefused') || msg.includes('eai_again') || msg.includes('enetunreach') || msg.includes('broken pipe')) {
+    return 'retryable';
+  }
+  return fallback;
+}
+
+function markClientError(kind) {
+  if (kind === 'non-retryable') {
+    stats.nonRetryableErrorTotal += 1;
+    return;
+  }
+  stats.retryableErrorTotal += 1;
+}
 
 function pickPoolIndex() {
   const index = rrIndex % h2SessionPoolSize;
@@ -148,7 +170,8 @@ function getH2Session(poolIndex) {
     );
     const connectTimeoutTimer = setTimeout(() => {
       stats.upstreamConnectTimeoutTotal += 1;
-      logger.error(`upstream h2 connect timeout ${cfg.upstream.host}:${cfg.upstream.port}`);
+      markClientError('retryable');
+      logger.error(`upstream h2 connect timeout host=${cfg.upstream.host} port=${cfg.upstream.port} path=${upstreamPath} err_class=retryable`);
       session.destroy(new Error('upstream connect timeout'));
     }, upstreamConnectTimeoutMs);
 
@@ -163,7 +186,9 @@ function getH2Session(poolIndex) {
       clearTimeout(connectTimeoutTimer);
       stats.upstreamConnectFailTotal += 1;
       slot.pending = null;
-      logger.error(`failed connect upstream h2 ${cfg.upstream.host}:${cfg.upstream.port}`, err.message);
+      const errClass = classifyClientError(err);
+      markClientError(errClass);
+      logger.error(`failed connect upstream h2 host=${cfg.upstream.host} port=${cfg.upstream.port} path=${upstreamPath} err_class=${errClass}`, err.message);
       reject(err);
     });
     session.on('close', () => {
@@ -172,7 +197,9 @@ function getH2Session(poolIndex) {
     });
     session.on('error', (err) => {
       stats.upstreamConnectFailTotal += 1;
-      logger.error('upstream h2 session error', err.message);
+      const errClass = classifyClientError(err);
+      markClientError(errClass);
+      logger.error(`upstream h2 session error path=${upstreamPath} err_class=${errClass}`, err.message);
       slot.session = null;
     });
   });
@@ -400,7 +427,10 @@ async function openProxyStream(targetHost, targetPort) {
       clearTimeout(timer);
       if (headers[':status'] !== 200) {
         stats.streamRejectedTotal += 1;
-        logger.warn(`stream rejected by server status=${headers[':status']} target=${targetHost}:${targetPort}`);
+        const statusCode = Number(headers[':status'] || 0);
+        const errClass = statusCode === 401 || statusCode === 403 ? 'non-retryable' : 'retryable';
+        markClientError(errClass);
+        logger.warn(`stream rejected by server mode=${upstreamPath} status=${statusCode} target=${targetHost}:${targetPort} err_class=${errClass}`);
         reject(new Error(`upstream status=${headers[':status']}`));
         return;
       }
@@ -484,13 +514,16 @@ const socksServer = createSocks5Server(
       socket.resume();
     } catch (err) {
       stats.socksConnectFailed += 1;
-      logger.error(`socks connect failed ${clientPeer} -> ${host}:${port}`, err.message);
+      const errClass = classifyClientError(err);
+      markClientError(errClass);
+      logger.error(`socks connect failed peer=${clientPeer} target=${host}:${port} mode=${upstreamPath} err_class=${errClass}`, err.message);
       socket.end(failReply(0x01));
     }
   }
 );
 
 socksServer.on('error', (err) => {
+  markClientError(classifyClientError(err));
   logger.error('socks server error', err.message);
 });
 
@@ -679,18 +712,22 @@ function startHttpProxyIfEnabled() {
         });
       } catch (err) {
         stats.socksConnectFailed += 1;
-        logger.error(`http connect failed ${peer} -> ${targetHost}:${targetPort}`, err.message);
+        const errClass = classifyClientError(err);
+        markClientError(errClass);
+        logger.error(`http connect failed peer=${peer} target=${targetHost}:${targetPort} mode=${upstreamPath} err_class=${errClass}`, err.message);
         socket.end('HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n');
       }
     };
 
     socket.on('data', handleHeader);
     socket.on('error', (err) => {
+      markClientError(classifyClientError(err));
       logger.warn(`http socket error ${peer}: ${err.message}`);
     });
   });
 
   httpProxy.on('error', (err) => {
+    markClientError(classifyClientError(err));
     logger.error('http proxy server error', err.message);
   });
 

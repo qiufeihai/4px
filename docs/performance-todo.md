@@ -18,8 +18,8 @@
 
 - [x] 复核并统一关键超时：connect/header/idle/h2 read idle/h2 ping。
 - [x] 复核连接池参数：`max_idle_conns`、`per_host`、`max_conns_per_host`。
-- [ ] 增强日志可读性：异常必须带关键上下文（目标、模式、错误码/状态码）。
-- [ ] 增强错误分类：把可重试错误与不可重试错误分开统计。
+- [x] 增强日志可读性：异常必须带关键上下文（目标、模式、错误码/状态码）。
+- [x] 增强错误分类：把可重试错误与不可重试错误分开统计。
 
 验收标准（P0）：
 - 成功率不下降（目标 `>= 99%`）。
@@ -168,5 +168,20 @@
 - cpu/mem: 待补
 - reconnect/errors: 待补
 结论：Go/Node 默认关键超时与连接池参数已对齐；Node 侧避免了 `||` 导致的 `0` 语义丢失
+是否回滚：否
+```
+
+```text
+日期：2026-05-06
+负责人：AI
+改动项：P0 日志可读性与错误分类（Node client/server 增加 retryable/non-retryable 统计与上下文字段）
+影响范围：apps/node/src/client.js, apps/node/src/server.js
+压测命令：node --check apps/node/src/client.js && node --check apps/node/src/server.js（语法检查）
+结果（前 -> 后）：
+- success_rate: 待补（本次为观测与分类增强）
+- p50/p95/p99: 待补
+- cpu/mem: 待补
+- reconnect/errors: 新增 retryable_err/non_retryable_err 指标；错误日志统一携带 mode/target/status/err_class
+结论：P0 四项已全部完成（参数、连接池、日志上下文、错误分类）；下一步进入 P2 调研或补充长稳与故障注入验证
 是否回滚：否
 ```

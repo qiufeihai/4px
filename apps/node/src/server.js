@@ -54,7 +54,9 @@ const stats = {
   remoteConnectErrorTotal: 0,
   remoteConnectTimeoutTotal: 0,
   remoteIdleTimeoutTotal: 0,
-  bufferOverflowTotal: 0
+  bufferOverflowTotal: 0,
+  retryableErrorTotal: 0,
+  nonRetryableErrorTotal: 0
 };
 const MUX_FRAME_OPEN = 1;
 const MUX_FRAME_DATA = 2;
@@ -67,10 +69,30 @@ loopDelay.enable();
 
 setInterval(() => {
   logger.info(
-    `metrics stream_total=${stats.streamTotal} active_streams=${stats.activeStreams} mux_channel_open_total=${stats.muxChannelOpenTotal} mux_channel_active=${stats.muxChannelActive} mux_frame_in_total=${stats.muxFrameInTotal} mux_frame_out_total=${stats.muxFrameOutTotal} mux_backpressure_pause_total=${stats.muxBackpressurePauseTotal} route_reject=${stats.routeRejectedTotal} auth_reject=${stats.authRejectedTotal} target_parse_fail=${stats.targetParseFailTotal} remote_ok=${stats.remoteConnectSuccessTotal} remote_error=${stats.remoteConnectErrorTotal} remote_connect_timeout=${stats.remoteConnectTimeoutTotal} remote_idle_timeout=${stats.remoteIdleTimeoutTotal} buffer_overflow=${stats.bufferOverflowTotal} eventloop_p95_ms=${(loopDelay.percentile(95) / 1e6).toFixed(2)}`
+    `metrics stream_total=${stats.streamTotal} active_streams=${stats.activeStreams} mux_channel_open_total=${stats.muxChannelOpenTotal} mux_channel_active=${stats.muxChannelActive} mux_frame_in_total=${stats.muxFrameInTotal} mux_frame_out_total=${stats.muxFrameOutTotal} mux_backpressure_pause_total=${stats.muxBackpressurePauseTotal} route_reject=${stats.routeRejectedTotal} auth_reject=${stats.authRejectedTotal} target_parse_fail=${stats.targetParseFailTotal} remote_ok=${stats.remoteConnectSuccessTotal} remote_error=${stats.remoteConnectErrorTotal} remote_connect_timeout=${stats.remoteConnectTimeoutTotal} remote_idle_timeout=${stats.remoteIdleTimeoutTotal} buffer_overflow=${stats.bufferOverflowTotal} retryable_err=${stats.retryableErrorTotal} non_retryable_err=${stats.nonRetryableErrorTotal} eventloop_p95_ms=${(loopDelay.percentile(95) / 1e6).toFixed(2)}`
   );
   loopDelay.reset();
 }, metricsIntervalMs).unref();
+
+function classifyServerError(err, fallback = 'retryable') {
+  const msg = String((err && (err.code || err.message)) || err || '').toLowerCase();
+  if (!msg) return fallback;
+  if (msg.includes('unauthorized') || msg.includes('forbidden') || msg.includes('auth') || msg.includes('status=401') || msg.includes('status=403')) {
+    return 'non-retryable';
+  }
+  if (msg.includes('econnreset') || msg.includes('etimedout') || msg.includes('timeout') || msg.includes('econnrefused') || msg.includes('eai_again') || msg.includes('enetunreach') || msg.includes('broken pipe')) {
+    return 'retryable';
+  }
+  return fallback;
+}
+
+function markServerError(kind) {
+  if (kind === 'non-retryable') {
+    stats.nonRetryableErrorTotal += 1;
+    return;
+  }
+  stats.retryableErrorTotal += 1;
+}
 
 function getUserRuntimeRecord(authUser) {
   const id = String(authUser && authUser.id ? authUser.id : '').trim() || 'unknown';
@@ -362,7 +384,8 @@ function handleProxyV2MuxStream(stream, authUser, remotePeer, streamId) {
       if (remoteIdleTimeoutMs > 0) {
         remote.setTimeout(remoteIdleTimeoutMs, () => {
           stats.remoteIdleTimeoutTotal += 1;
-          logger.warn(`mux remote idle timeout, stream=${streamId}, channel=${id}, target=${host}:${port}`);
+          markServerError('retryable');
+          logger.warn(`mux remote idle timeout, stream=${streamId}, channel=${id}, target=${host}:${port}, mode=proxy-v2, err_class=retryable`);
           closeRemote(id);
           sendFrame(MUX_FRAME_CLOSE, id, null);
         });
@@ -370,7 +393,8 @@ function handleProxyV2MuxStream(stream, authUser, remotePeer, streamId) {
 
       const connectTimeoutTimer = setTimeout(() => {
         stats.remoteConnectTimeoutTotal += 1;
-        logger.warn(`mux remote connect timeout, stream=${streamId}, channel=${id}, target=${host}:${port}`);
+        markServerError('retryable');
+        logger.warn(`mux remote connect timeout, stream=${streamId}, channel=${id}, target=${host}:${port}, mode=proxy-v2, err_class=retryable`);
         closeRemote(id);
         sendFrame(MUX_FRAME_OPEN_ERROR, id, Buffer.from('connect timeout'));
       }, remoteConnectTimeoutMs);
@@ -395,7 +419,9 @@ function handleProxyV2MuxStream(stream, authUser, remotePeer, streamId) {
       });
       remote.on('error', (err) => {
         stats.remoteConnectErrorTotal += 1;
-        logger.warn(`mux remote error, stream=${streamId}, channel=${id}, err=${err.message}`);
+        const errClass = classifyServerError(err);
+        markServerError(errClass);
+        logger.warn(`mux remote error, stream=${streamId}, channel=${id}, target=${host}:${port}, mode=proxy-v2, err_class=${errClass}, err=${err.message}`);
         closeRemote(id);
         sendFrame(MUX_FRAME_CLOSE, id, null);
       });
@@ -493,7 +519,8 @@ server.on('stream', (stream, headers) => {
     const isProxyV2Mux = isProxyV2 && String(headers['x-4px-v2-mode'] || '') === 'mux';
     if (!isProxyV1 && !isProxyV2) {
       stats.routeRejectedTotal += 1;
-      logger.warn(`reject invalid route, peer=${remotePeer}, stream=${streamId}`);
+      markServerError('non-retryable');
+      logger.warn(`reject invalid route, peer=${remotePeer}, stream=${streamId}, method=${reqMethod}, path=${reqPath}, err_class=non-retryable`);
       stream.respond({ ':status': 404 });
       stream.end();
       return;
@@ -501,7 +528,8 @@ server.on('stream', (stream, headers) => {
     const authResult = userStore.authenticate(headers['x-auth-token']);
     if (!authResult.ok) {
       stats.authRejectedTotal += 1;
-      logger.warn(`reject unauthorized request, peer=${remotePeer}, stream=${streamId}, reason=${authResult.reason}`);
+      markServerError('non-retryable');
+      logger.warn(`reject unauthorized request, peer=${remotePeer}, stream=${streamId}, path=${reqPath}, reason=${authResult.reason}, err_class=non-retryable`);
       stream.respond({ ':status': 401 });
       stream.end();
       return;
@@ -510,7 +538,8 @@ server.on('stream', (stream, headers) => {
     markUserSeen(authUser);
     if (isProxyV2 && String(headers['x-4px-v2'] || '') !== '1') {
       stats.routeRejectedTotal += 1;
-      logger.warn(`reject v2 handshake, peer=${remotePeer}, stream=${streamId}`);
+      markServerError('non-retryable');
+      logger.warn(`reject v2 handshake, peer=${remotePeer}, stream=${streamId}, path=${reqPath}, err_class=non-retryable`);
       stream.respond({ ':status': 426 });
       stream.end();
       return;
@@ -529,7 +558,8 @@ server.on('stream', (stream, headers) => {
 
     const connectTimeoutTimer = setTimeout(() => {
       stats.remoteConnectTimeoutTotal += 1;
-      logger.warn(`remote connect timeout, stream=${streamId}, target=${host}:${port}`);
+      markServerError('retryable');
+      logger.warn(`remote connect timeout, stream=${streamId}, target=${host}:${port}, mode=${reqPath}, err_class=retryable`);
       remote.destroy(new Error('connect timeout'));
     }, remoteConnectTimeoutMs);
 
@@ -542,7 +572,8 @@ server.on('stream', (stream, headers) => {
       if (remoteIdleTimeoutMs > 0) {
         remote.setTimeout(remoteIdleTimeoutMs, () => {
           stats.remoteIdleTimeoutTotal += 1;
-          logger.warn(`remote idle timeout, stream=${streamId}, target=${host}:${port}`);
+          markServerError('retryable');
+          logger.warn(`remote idle timeout, stream=${streamId}, target=${host}:${port}, mode=${reqPath}, err_class=retryable`);
           remote.destroy(new Error('idle timeout'));
         });
       }
@@ -595,7 +626,8 @@ server.on('stream', (stream, headers) => {
     stream.on('error', closeBoth);
     remote.on('error', () => {
       stats.remoteConnectErrorTotal += 1;
-      logger.error(`remote connection error, stream=${streamId}, target=${host}:${port}`);
+      markServerError('retryable');
+      logger.error(`remote connection error, stream=${streamId}, target=${host}:${port}, mode=${reqPath}, err_class=retryable`);
       if (!responded && !stream.destroyed) {
         stream.respond({ ':status': 502 });
         stream.end();
@@ -613,7 +645,9 @@ server.on('stream', (stream, headers) => {
     });
   } catch (e) {
     stats.targetParseFailTotal += 1;
-    logger.error(`bad request on stream, peer=${remotePeer}, stream=${streamId}`, e.message);
+    const errClass = classifyServerError(e, 'non-retryable');
+    markServerError(errClass);
+    logger.error(`bad request on stream, peer=${remotePeer}, stream=${streamId}, err_class=${errClass}`, e.message);
     stream.respond({ ':status': 400 });
     stream.end();
     if (stats.activeStreams > 0) stats.activeStreams -= 1;
