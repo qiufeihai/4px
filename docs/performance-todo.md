@@ -711,3 +711,19 @@ cd /Users/qiufeihai/github/4px/apps/go
 结论：S3 回退后在 c80/c120 有局部收益，但 c160 尾延迟明显劣化；按稳定优先口径，建议保留 S3（不回滚）
 是否回滚：否（S3 保留）
 ```
+
+```text
+日期：2026-05-06
+负责人：AI
+改动项：S2 二分验收（你已部署后执行；对比 S1~S2~S3 与 S1~S3）
+影响范围：apps/go/benchmarks_go/server_s1_s3_no_s2_postdeploy_valid_20260506；对照 apps/go/benchmarks_go/server_s1_s3_postdeploy_valid_20260506
+压测命令：./benchmark_go_clientcore_modes.sh --profile gradient --repeat 3 --success-threshold 99 --p95-threshold-ms 8000 --kill-listeners --out apps/go/benchmarks_go/server_s1_s3_no_s2_postdeploy_valid_20260506
+结果（前 -> 后，前=S1~S2~S3，后=S1~S3，关注 proxy-v2 中位值）：
+- success_rate: c80/c120/c160 均为 100%（proxy 与 v2）
+- c80: p95 1518.253 -> 1415.616（改善），p99 1732.157 -> 1494.898（改善）
+- c120: p95 2202.506 -> 2032.217（改善），p99 2366.406 -> 2542.577（回退）
+- c160: p95 2681.491 -> 2779.87（回退），p99 3318.143 -> 3334.856（小幅回退）
+- cpu/mem(v2): CPU 3.2/3.044 -> 3.3/3.367；RSS 23.061/24.444 -> 23.347/25.179MB（c120/c160）
+结论：回退 S2 在低并发有收益，但中高并发（尤其 c160）尾延迟与 CPU 有回退；按稳定优先口径建议保留 S2
+是否回滚：否（S2 保留）
+```

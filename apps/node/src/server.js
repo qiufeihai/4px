@@ -16,6 +16,8 @@ const remoteConnectTimeoutMs = cfg.remoteConnectTimeoutMs || cfg.connectTimeoutM
 const remoteIdleTimeoutMs = Number.isFinite(Number(cfg.remoteIdleTimeoutMs)) ? Number(cfg.remoteIdleTimeoutMs) : 300000;
 const remoteKeepAliveInitialDelayMs = cfg.remoteKeepAliveInitialDelayMs || 30000;
 const streamIdleTimeoutMs = Number.isFinite(Number(cfg.streamIdleTimeoutMs)) ? Number(cfg.streamIdleTimeoutMs) : 300000;
+const muxFlushNotifyBytes = Math.max(512, Number(cfg.muxFlushNotifyBytes || 4096));
+const muxFlushMaxDelayMs = Math.max(0, Number(cfg.muxFlushMaxDelayMs || 2));
 const maxBufferedBytes = cfg.maxBufferedBytes || 4 * 1024 * 1024;
 const metricsIntervalMs = cfg.metricsIntervalMs || 30000;
 const listenBacklog = cfg.listenBacklog || 4096;
@@ -228,9 +230,9 @@ function handleProxyV2MuxStream(stream, authUser, remotePeer, streamId) {
   let writableBlocked = false;
   const pausedRemotes = new Set();
   const outboundQueue = [];
-  let outboundQueueHead = 0;
   let outboundQueuedBytes = 0;
   let flushScheduled = false;
+  let flushDelayTimer = null;
   const MAX_INCOMING_BUFFER = Math.max(maxBufferedBytes * 2, 1024 * 1024);
   const MAX_OUTGOING_BUFFER = Math.max(maxBufferedBytes * 2, 1024 * 1024);
 
@@ -381,21 +383,17 @@ function handleProxyV2MuxStream(stream, authUser, remotePeer, streamId) {
     });
   };
 
-  const outboundQueueSize = () => outboundQueue.length - outboundQueueHead;
-
-  const compactOutboundQueue = () => {
-    if (outboundQueueHead === 0) return;
-    if (outboundQueueHead >= outboundQueue.length) {
-      outboundQueue.length = 0;
-      outboundQueueHead = 0;
-      return;
-    }
-    if (outboundQueueHead < 128 && outboundQueueHead * 2 < outboundQueue.length) return;
-    outboundQueue.splice(0, outboundQueueHead);
-    outboundQueueHead = 0;
-  };
+  const outboundQueueSize = () => outboundQueue.length;
 
   const pendingOutboundBytes = () => stream.writableLength + outboundQueuedBytes;
+
+  const clearFlushDelayTimer = () => {
+    if (flushDelayTimer == null) return;
+    clearTimeout(flushDelayTimer);
+    flushDelayTimer = null;
+  };
+
+  const isControlFrame = (frameType) => frameType !== MUX_FRAME_DATA;
 
   const sendFrame = (frameType, id, payload) => {
     if (stream.destroyed) return false;
@@ -410,7 +408,7 @@ function handleProxyV2MuxStream(stream, authUser, remotePeer, streamId) {
       if (!stream.destroyed) stream.close();
       return false;
     }
-    scheduleFlush();
+    scheduleFlush(isControlFrame(frameType));
     return !writableBlocked;
   };
 
@@ -418,14 +416,12 @@ function handleProxyV2MuxStream(stream, authUser, remotePeer, streamId) {
     if (stream.destroyed || outboundQueueSize() === 0) return;
     stream.cork();
     let ok = true;
-    while (outboundQueueHead < outboundQueue.length) {
-      const item = outboundQueue[outboundQueueHead];
-      outboundQueueHead += 1;
+    while (outboundQueue.length > 0) {
+      const item = outboundQueue.shift();
       outboundQueuedBytes -= item.frameBytes;
       ok = muxWriteFrame(stream, item.frameType, item.id, item.body) && ok;
       if (!ok) break;
     }
-    compactOutboundQueue();
     stream.uncork();
     if (!ok) {
       setWritableBlocked(true);
@@ -437,14 +433,30 @@ function handleProxyV2MuxStream(stream, authUser, remotePeer, streamId) {
     }
   };
 
-  const scheduleFlush = () => {
+  const scheduleFlush = (forceImmediate = false) => {
     if (stream.destroyed) return;
-    if (flushScheduled) return;
-    flushScheduled = true;
-    setImmediate(() => {
-      flushScheduled = false;
-      flushOutboundQueue();
-    });
+    const immediate = forceImmediate || outboundQueuedBytes >= muxFlushNotifyBytes || muxFlushMaxDelayMs <= 0;
+    if (immediate) {
+      if (flushScheduled) return;
+      clearFlushDelayTimer();
+      flushScheduled = true;
+      setImmediate(() => {
+        flushScheduled = false;
+        flushOutboundQueue();
+      });
+      return;
+    }
+    if (flushDelayTimer != null || flushScheduled) return;
+    flushDelayTimer = setTimeout(() => {
+      flushDelayTimer = null;
+      if (flushScheduled || stream.destroyed) return;
+      flushScheduled = true;
+      setImmediate(() => {
+        flushScheduled = false;
+        flushOutboundQueue();
+      });
+    }, muxFlushMaxDelayMs);
+    flushDelayTimer.unref();
   };
 
   const openRemote = (id, payload) => {
@@ -558,8 +570,8 @@ function handleProxyV2MuxStream(stream, authUser, remotePeer, streamId) {
   stream.on('close', () => {
     if (stats.activeStreams > 0) stats.activeStreams -= 1;
     outboundQueue.length = 0;
-    outboundQueueHead = 0;
     outboundQueuedBytes = 0;
+    clearFlushDelayTimer();
     setWritableBlocked(false);
     closeAll();
   });
