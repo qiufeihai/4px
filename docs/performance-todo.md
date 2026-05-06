@@ -2,6 +2,8 @@
 
 本文档用于持续跟踪 4px 的性能优化项，便于后续由 AI 或人工按清单推进。
 
+补充参考：分档选型速查见 `docs/perf-profile-recommendation.md`。
+
 ## 目标与约束
 
 - 目标：在保持稳定性的前提下，提升 `proxy-v2/mux` 吞吐与尾延迟表现。
@@ -10,9 +12,9 @@
 
 ## 基线指标（先补齐）
 
-- [ ] 固定压测方法：请求数、并发梯度、超时阈值、目标地址。
-- [ ] 固定采集指标：`ok/fail`、成功率、p50/p95/p99、CPU、内存、重连次数。
-- [ ] 固定记录位置：把每轮测试结果追加到本文档末尾“执行记录”。
+- [x] 固定压测方法：请求数、并发梯度、超时阈值、目标地址。（`benchmark_go_clientcore_modes.sh` 新增 `--profile smoke|gradient|soak` 预设）
+- [x] 固定采集指标：`ok/fail`、成功率、p50/p95/p99、CPU、内存、重连次数。（压测脚本 summary/compare 已自动采集 CPU 与 RSS）
+- [x] 固定记录位置：把每轮测试结果追加到本文档末尾“执行记录”。
 
 ## P0：低风险高收益
 
@@ -39,7 +41,7 @@
 ## P2：传输与协议能力扩展
 
 - [ ] 调研并试点 HTTP/3（QUIC）可选通道，不替换现有默认通道。（暂不实现：当前网络环境对 UDP 不友好，优先维持 H2/TCP 主链路；仅在网络环境变化后再评估）
-- [ ] 评估 TLS 参数优化（会话复用、握手开销、证书链策略）。
+- [x] 评估 TLS 参数优化（会话复用、握手开销、证书链策略）。
 - [ ] 评估前置反向代理统一 TLS 外观（可维护优先）。
 
 验收标准（P2）：
@@ -183,5 +185,286 @@
 - cpu/mem: 待补
 - reconnect/errors: 新增 retryable_err/non_retryable_err 指标；错误日志统一携带 mode/target/status/err_class
 结论：P0 四项已全部完成（参数、连接池、日志上下文、错误分类）；下一步进入 P2 调研或补充长稳与故障注入验证
+是否回滚：否
+```
+
+```text
+日期：2026-05-06
+负责人：AI
+改动项：基线能力补齐（Go 压测脚本新增 profile 预设 + 客户端进程 CPU/RSS 自动采样并写入 summary/compare）
+影响范围：apps/go/benchmark_go_clientcore_modes.sh
+压测命令：bash -n apps/go/benchmark_go_clientcore_modes.sh（语法检查）；后续建议 ./benchmark_go_clientcore_modes.sh --profile gradient --success-threshold 99 --p95-threshold-ms 8000 --kill-listeners
+结果（前 -> 后）：
+- success_rate: 指标口径不变（ok/fail 与延迟分位保持）
+- p50/p95/p99: 指标口径不变（新增统一 profile 便于横向对比）
+- cpu/mem: 新增 `cpu_pct_avg/cpu_pct_max/rss_mb_avg/rss_mb_max/resource_samples`
+- reconnect/errors: 指标口径不变（沿用既有 summary 字段）
+结论：基线“固定压测方法+固定采集指标+固定记录位置”已落地，后续优化可直接按统一模板执行
+是否回滚：否
+```
+
+```text
+日期：2026-05-06
+负责人：AI
+改动项：执行 gradient 基线压测并补齐 CPU/RSS 指标样本
+影响范围：apps/go/benchmark_go_clientcore_modes.sh（执行层）；apps/go/benchmarks_go/20260506_101729（结果）
+压测命令：./benchmark_go_clientcore_modes.sh --profile gradient --success-threshold 99 --p95-threshold-ms 8000 --kill-listeners
+结果（前 -> 后）：
+- success_rate: proxy(c80)=9.8%（启动窗口干扰）；其余档位与 proxy-v2 均为 100%
+- p50/p95/p99: c120 proxy-v2 p95=2041.582ms（低于 proxy 的 2253.829ms）；c160 proxy-v2 p95=2799.838ms（低于 proxy 的 2955.541ms）
+- cpu/mem: proxy-v2 CPU 均值约 3.18~3.36%，RSS 均值约 20.56~23.61MB；proxy CPU 均值约 2.28~2.30%，RSS 均值约 27.77~28.11MB（c120/c160）
+- reconnect/errors: c80 proxy 出现大量 `127.0.0.1:7788` 连接失败，判定为代理启动就绪窗口问题
+结论：CPU/RSS 指标链路可用；需要修复“客户端启动后立即压测”导致的假失败，保证基线稳定
+是否回滚：否
+```
+
+```text
+日期：2026-05-06
+负责人：AI
+改动项：压测脚本新增代理就绪等待（启动后先探测可用再进入 warmup/benchmark）
+影响范围：apps/go/benchmark_go_clientcore_modes.sh（wait_proxy_ready + --startup-wait-sec）
+压测命令：./benchmark_go_clientcore_modes.sh --profile smoke --requests 120 --modes proxy --kill-listeners --success-threshold 99 --p95-threshold-ms 8000
+结果（前 -> 后）：
+- success_rate: proxy c40/c80 均恢复到 100%
+- p50/p95/p99: c40=641.73/693.252/713.175ms；c80=1290.342/1404.358/1415.026ms
+- cpu/mem: c40 cpu_avg=2.1% rss_avg=18.255MB；c80 cpu_avg=1.833% rss_avg=20.49MB
+- reconnect/errors: 无请求级错误
+结论：已消除启动窗口带来的假失败，后续梯度/长稳数据可直接用于优化验收
+是否回滚：否
+```
+
+```text
+日期：2026-05-06
+负责人：AI
+改动项：修复后完整 gradient 基线复测（作为当前优化阶段对比基线）
+影响范围：apps/go/benchmarks_go/20260506_102011（结果）
+压测命令：./benchmark_go_clientcore_modes.sh --profile gradient --success-threshold 99 --p95-threshold-ms 8000 --kill-listeners
+结果（前 -> 后）：
+- success_rate: proxy/proxy-v2 在 c=80/120/160 均为 100%
+- p50/p95/p99:
+  - c80: proxy=1264.033/1743.51/1844.665ms；v2=1249.543/1962.594/2032.029ms
+  - c120: proxy=1886.14/2170.434/2211.097ms；v2=1929.366/2479.599/2526.672ms
+  - c160: proxy=2508.679/2719.061/2798.834ms；v2=2483.697/2814.96/2864.353ms
+- cpu/mem:
+  - c120/c160: v2 RSS 均值约 23.286~25.302MB（低于 proxy 的 28.589~31.075MB）
+  - c80/c120/c160: v2 CPU 均值约 3.156~3.778%（高于 proxy 的 1.711~2.489%）
+- reconnect/errors: 无请求级错误；日志中的 `Terminated: 15` 为脚本主动结束客户端进程
+结论：当前优化后链路稳定性达标（100%）；v2 在内存占用上有优势，但 CPU 与尾延迟仍有继续优化空间
+是否回滚：否
+```
+
+```text
+日期：2026-05-06
+负责人：AI
+改动项：mux 自适应 flush（按待 flush 字节阈值与最大延迟触发，减少无效唤醒）
+影响范围：apps/go/pkg/clientcore/core.go（sendFrame/flushBuffered/start 流程）
+压测命令：./benchmark_go_clientcore_modes.sh --profile smoke --requests 200 --modes proxy-v2 --kill-listeners --success-threshold 99 --p95-threshold-ms 8000
+结果（前 -> 后）：
+- success_rate: proxy-v2 在 c40/c80 均为 100%
+- p50/p95/p99: c40=617.776/749.923/965.414ms；c80=1246.37/1371.988/1390.961ms
+- cpu/mem: c40 cpu_avg=2.925% rss_avg=17.633MB；c80 cpu_avg=2.6% rss_avg=18.785MB
+- reconnect/errors: 无请求级错误；`Terminated: 15` 为脚本主动结束客户端进程
+结论：自适应 flush 已稳定落地且无回归；下一步需在 gradient 全量对照下验证 CPU 与尾延迟改善幅度
+是否回滚：否
+```
+
+```text
+日期：2026-05-06
+负责人：AI
+改动项：自适应 flush 后完整 gradient 对照复测
+影响范围：apps/go/benchmarks_go/20260506_102551（结果）；对照基线 apps/go/benchmarks_go/20260506_102011
+压测命令：./benchmark_go_clientcore_modes.sh --profile gradient --success-threshold 99 --p95-threshold-ms 8000 --kill-listeners
+结果（前 -> 后）：
+- success_rate: proxy/proxy-v2 在 c=80/120/160 均为 100%
+- p50/p95/p99（关注 proxy-v2）:
+  - c80: p95 1962.594 -> 1409.191（改善）；p99 2032.029 -> 2108.53（轻微回退）
+  - c120: p95 2479.599 -> 2285.428（改善）；p99 2526.672 -> 2468.978（改善）
+  - c160: p95 2814.96 -> 2787.824（小幅改善）；p99 2864.353 -> 3090.59（回退）
+- cpu/mem（proxy-v2）: CPU 均值约 3.0~3.522%；RSS 均值约 21.731~23.486MB（仍显著低于 proxy）
+- reconnect/errors: 无请求级错误；`Terminated: 15` 为脚本主动结束客户端进程
+结论：自适应 flush 对 p95 有正向收益（尤其 c80/c120），但 p99 在部分档位波动；建议下一步做“写锁竞争与 flush 通知抖动”专项优化
+是否回滚：否
+```
+
+```text
+日期：2026-05-06
+负责人：AI
+改动项：flush 循环降竞争（仅在 pending 数据存在时才进入 flush，减少写锁空竞争）
+影响范围：apps/go/pkg/clientcore/core.go（startFlushLoop/sendFrame/flushBuffered）
+压测命令：./benchmark_go_clientcore_modes.sh --profile smoke --requests 200 --modes proxy-v2 --kill-listeners --success-threshold 99 --p95-threshold-ms 8000
+结果（前 -> 后）：
+- success_rate: proxy-v2 在 c40/c80 均为 100%
+- p50/p95/p99: c40=619.567/821.858/966.209ms；c80=1248.26/1406.308/1608.834ms
+- cpu/mem: c40 cpu_avg=3.7% rss_avg=18.055MB；c80 cpu_avg=3.225% rss_avg=19.145MB
+- reconnect/errors: 无请求级错误；`Terminated: 15` 为脚本主动结束客户端进程
+结论：无回归；flush 空竞争已降低，下一步需在 gradient 全量对照中评估 p99 抖动是否收敛
+是否回滚：否
+```
+
+```text
+日期：2026-05-06
+负责人：AI
+改动项：flush 降竞争后完整 gradient 对照复测
+影响范围：apps/go/benchmarks_go/20260506_102938（结果）；对照上一轮 apps/go/benchmarks_go/20260506_102551
+压测命令：./benchmark_go_clientcore_modes.sh --profile gradient --success-threshold 99 --p95-threshold-ms 8000 --kill-listeners
+结果（前 -> 后）：
+- success_rate: proxy/proxy-v2 在 c=80/120/160 均为 100%
+- p50/p95/p99（关注 proxy-v2，对比 102551）:
+  - c80: p95 1409.191 -> 1512.943（回退）；p99 2108.53 -> 1639.603（改善）
+  - c120: p95 2285.428 -> 2339.883（小幅回退）；p99 2468.978 -> 2954.03（回退）
+  - c160: p95 2787.824 -> 2721.284（改善）；p99 3090.59 -> 2817.639（改善）
+- cpu/mem（proxy-v2）: CPU 均值约 2.956~3.633%；RSS 均值约 22.061~25.439MB（仍显著低于 proxy）
+- reconnect/errors: 无请求级错误；`Terminated: 15` 为脚本主动结束客户端进程
+结论：优化保持稳定（100%），但 p95/p99 仍存在档位波动；建议进行至少 3 轮重复测取中位值，再判断是否继续调整 flush 参数
+是否回滚：否
+```
+
+```text
+日期：2026-05-06
+负责人：AI
+改动项：压测脚本支持重复执行与中位值报告（--repeat）
+影响范围：apps/go/benchmark_go_clientcore_modes.sh
+压测命令：./benchmark_go_clientcore_modes.sh --profile smoke --repeat 2 --requests 80 --modes proxy-v2 --kill-listeners --success-threshold 99 --p95-threshold-ms 8000
+结果（前 -> 后）：
+- success_rate: repeat=2 下 c40/c80 均为 100%
+- p50/p95/p99: 已支持多轮采样，新增 compare_median.md / verdict_median.md 输出中位值
+- cpu/mem: 已纳入中位值汇总（cpu_avg_med / rss_avg_med）
+- reconnect/errors: 无请求级错误；`Terminated: 15` 为脚本主动结束客户端进程
+结论：已具备“重复压测 + 中位值决策”能力，可减少单轮波动对结论的干扰
+是否回滚：否
+```
+
+```text
+日期：2026-05-06
+负责人：AI
+改动项：TLS 参数优化（启用 Go 客户端 TLS 会话缓存，新增 upstream_tls_session_cache_size 默认 256）
+影响范围：apps/go/pkg/clientcore/core.go, apps/go/config/client.example.json, apps/go/gui/app.go
+压测命令：./benchmark_go_clientcore_modes.sh --profile smoke --requests 200 --modes proxy-v2 --kill-listeners --success-threshold 99 --p95-threshold-ms 8000
+结果（前 -> 后）：
+- success_rate: proxy-v2 在 c40/c80 均为 100%
+- p50/p95/p99: c40=622.236/700.661/741.145ms；c80=1203.385/1366.757/1379.147ms
+- cpu/mem: c40 cpu_avg=2.775% rss_avg=17.383MB；c80 cpu_avg=3.85% rss_avg=18.938MB
+- reconnect/errors: 无请求级错误；`Terminated: 15` 为脚本主动结束客户端进程
+结论：TLS 会话缓存改动已稳定落地；短测无回归，后续可通过 repeat=3 的 gradient 中位值进一步量化握手开销收益
+是否回滚：否
+```
+
+```text
+日期：2026-05-06
+负责人：AI
+改动项：TLS 会话缓存改动后的 repeat=3 gradient 中位值验收
+影响范围：apps/go/benchmarks_go/20260506_103716（compare_median.md / verdict_median.md）
+压测命令：./benchmark_go_clientcore_modes.sh --profile gradient --repeat 3 --success-threshold 99 --p95-threshold-ms 8000 --kill-listeners
+结果（前 -> 后）：
+- success_rate: proxy/proxy-v2 在 c=80/120/160 中位值均为 100%
+- p95 中位值: c80 v2=1497.322（优于 proxy 1527.108）；c120 v2=2132.129（与 proxy 2129.806 基本持平）；c160 v2=2681.762（优于 proxy 2745.438）
+- p99 中位值: c120/c160 v2 分别为 2200.875/2792.306，均显著优于 proxy 的 2771.646/3594.752；c80 v2 为 1835.882，略高于 proxy 的 1807.885
+- cpu/mem 中位值: v2 CPU 高于 proxy（约 +0.8~1.3%），但 RSS 显著更低（约 -4~7MB）
+结论：repeat=3 中位值下，v2 在稳定性与高并发尾延迟（尤其 c120/c160 p99）表现更优，CPU 仍有优化空间；可继续保持 v2 为默认主路径
+是否回滚：否
+```
+
+```text
+日期：2026-05-06
+负责人：AI
+改动项：sendFrame 热路径降开销（每帧 atomic 计数改为状态翻转 hasPendingFlush，仅在 0->有数据/flush 后清零时更新）
+影响范围：apps/go/pkg/clientcore/core.go（mux sendFrame/startFlushLoop/flushBuffered）
+压测命令：./benchmark_go_clientcore_modes.sh --profile smoke --repeat 2 --requests 120 --modes proxy-v2 --kill-listeners --success-threshold 99 --p95-threshold-ms 8000
+结果（前 -> 后）：
+- success_rate: c40/c80 中位值均为 100%
+- p50/p95/p99: c40=625.364/737.563/750.624ms；c80=1257.505/1350.385/1370.527ms
+- cpu/mem: c40 cpu_avg_med=4.05% rss_avg_med=16.773MB；c80 cpu_avg_med=2.7% rss_avg_med=17.794MB
+- reconnect/errors: 无请求级错误；仅测试 v2 模式，verdict_median 为 INCOMPLETE 属预期
+结论：改动稳定无回归；已减少热路径原子操作频率，CPU 优化趋势需在 repeat=3 的 gradient 全量对照下确认
+是否回滚：否
+```
+
+```text
+日期：2026-05-06
+负责人：AI
+改动项：sendFrame 热路径降开销后的 repeat=3 gradient 中位值验收
+影响范围：apps/go/benchmarks_go/20260506_104452（compare_median.md / verdict_median.md）
+压测命令：./benchmark_go_clientcore_modes.sh --profile gradient --repeat 3 --success-threshold 99 --p95-threshold-ms 8000 --kill-listeners
+结果（前 -> 后）：
+- success_rate: proxy/proxy-v2 在 c=80/120/160 中位值均为 100%
+- p95 中位值: c80 v2=1521.596（优于 proxy 1559.666）；c120 v2=2238.998（劣于 proxy 2149.666）；c160 v2=2870.475（劣于 proxy 2833.236）
+- p99 中位值: c80/c120/c160 v2=1707.542/2408.354/3157.64，其中 c120/c160 相比 proxy 存在回退
+- cpu/mem 中位值: v2 CPU 约 3.11/3.156/3.278%，较 proxy 2.244/1.856/2.244 偏高；RSS 仍显著更低（约 -3.8MB~-6.8MB）
+结论：该优化在全量中位值口径下未体现稳定收益（尤其 c120/c160 尾延迟回退）；建议暂不继续沿此方向调参，优先考虑回滚该变更并转向连接/调度层优化
+是否回滚：建议回滚（待确认）
+```
+
+```text
+日期：2026-05-06
+负责人：AI
+改动项：回滚 sendFrame 热路径 hasPendingFlush 实验改动并做 repeat=3 gradient 复核
+影响范围：apps/go/pkg/clientcore/core.go；apps/go/benchmarks_go/20260506_105007（compare_median.md / verdict_median.md）
+压测命令：./benchmark_go_clientcore_modes.sh --profile gradient --repeat 3 --success-threshold 99 --p95-threshold-ms 8000 --kill-listeners
+结果（前 -> 后）：
+- success_rate: proxy/proxy-v2 在 c=80/120/160 中位值均为 100%
+- p95 中位值（回滚后 v2）: c80=1600.807（较回滚前 1521.596 回退）；c120=2136.652（较回滚前 2238.998 改善）；c160=2696.214（较回滚前 2870.475 明显改善）
+- p99 中位值（回滚后 v2）: c80=1866.016（较回滚前 1707.542 回退）；c120=2637.28（较回滚前 2408.354 回退）；c160=2832.557（较回滚前 3157.64 改善）
+- cpu/mem 中位值（回滚后 v2）: CPU 约 3.611/3.111/3.189%，RSS 约 22.224/23.536/24.163MB
+结论：回滚后在中高并发（c120/c160）的 p95 明显更稳，但 c80 与部分 p99 仍有波动；建议保持当前回滚版本，后续优化转向连接调度策略而非热路径原子逻辑
+是否回滚：是（已执行）
+```
+
+```text
+日期：2026-05-06
+负责人：AI
+改动项：flush 通知合并（drain flushNotify，合并突发通知，减少重复唤醒）
+影响范围：apps/go/pkg/clientcore/core.go（startFlushLoop notify 分支）
+压测命令：./benchmark_go_clientcore_modes.sh --profile smoke --repeat 2 --requests 120 --modes proxy-v2 --kill-listeners --success-threshold 99 --p95-threshold-ms 8000
+结果（前 -> 后）：
+- success_rate: c40/c80 中位值均为 100%
+- p50/p95/p99: c40=609.986/794.566/962.056ms；c80=1157.698/1328.633/1341.422ms
+- cpu/mem: c40 cpu_avg_med=3.716% rss_avg_med=16.834MB；c80 cpu_avg_med=3.734% rss_avg_med=17.88MB
+- reconnect/errors: 无请求级错误；仅测试 v2 模式，verdict_median 为 INCOMPLETE 属预期
+结论：通知合并改动稳定无回归；在 smoke 口径下尾延迟有改善迹象，建议下一步用 repeat=3 的 gradient 全量对照确认
+是否回滚：否
+```
+
+```text
+日期：2026-05-06
+负责人：AI
+改动项：flush 通知合并后的 repeat=3 gradient 全量验收
+影响范围：apps/go/benchmarks_go/20260506_105650（compare_median.md / verdict_median.md）
+压测命令：./benchmark_go_clientcore_modes.sh --profile gradient --repeat 3 --success-threshold 99 --p95-threshold-ms 8000 --kill-listeners
+结果（前 -> 后）：
+- success_rate: proxy/proxy-v2 在 c=80/120/160 中位值均为 100%
+- p95 中位值: c80 v2=1552.437（劣于 proxy 1389.324）；c120 v2=2194.778（劣于 proxy 2155.89）；c160 v2=2678.264（优于 proxy 2806.021）
+- p99 中位值: c80/c120 v2=1737.145/2487.227（略劣于 proxy 1715.303/2450.987）；c160 v2=2906.502（优于 proxy 3265.173）
+- cpu/mem 中位值: v2 CPU 约 3.633/3.7/3.278%，仍高于 proxy；RSS 约 21.672/23.377/24.958MB，显著低于 proxy
+结论：该优化在全量中位值口径下收益不一致（仅 c160 明显受益）；建议保持代码稳定，暂不继续放大此方向改动，后续转向更可控的参数分档策略
+是否回滚：暂不回滚（可保留）
+```
+
+```text
+日期：2026-05-06
+负责人：AI
+改动项：mux 参数分档策略（latency/balanced/throughput）+ 可选细粒度覆盖参数
+影响范围：apps/go/pkg/clientcore/core.go, apps/go/config/client.example.json
+压测命令：./benchmark_go_clientcore_modes.sh --profile smoke --repeat 2 --requests 120 --modes proxy-v2 --kill-listeners --success-threshold 99 --p95-threshold-ms 8000
+结果（前 -> 后）：
+- success_rate: c40/c80 中位值均为 100%
+- p50/p95/p99: c40=625.417/831.281/1027.764ms；c80=1305.936/1459.061/1471.072ms
+- cpu/mem: c40 cpu_avg_med=2.567% rss_avg_med=16.857MB；c80 cpu_avg_med=3.4% rss_avg_med=17.495MB
+- reconnect/errors: 无请求级错误；仅测试 v2 模式，verdict_median 为 INCOMPLETE 属预期
+结论：参数分档能力已落地且默认保持 balanced 行为；可在后续 gradient repeat=3 中按分档横向对比，选择更适合当前网络环境的默认档
+是否回滚：否
+```
+
+```text
+日期：2026-05-06
+负责人：AI
+改动项：mux 三档参数横向验收（latency/balanced/throughput，均执行 gradient + repeat=3）
+影响范围：apps/go/benchmarks_go/profile_latency_20260506, apps/go/benchmarks_go/profile_balanced_20260506, apps/go/benchmarks_go/profile_throughput_20260506
+压测命令：./benchmark_go_clientcore_modes.sh --profile gradient --repeat 3 --success-threshold 99 --p95-threshold-ms 8000 --kill-listeners --out <dir>
+结果（前 -> 后）：
+- success_rate: 三档在 c80/c120/c160 下 proxy/proxy-v2 中位值均为 100%
+- p95（proxy-v2 中位值）: latency=1406.115/2232.192/2641.078；balanced=1433.835/2097.945/2678.913；throughput=1419.425/2360.751/2732.473（对应 c80/c120/c160）
+- p99（proxy-v2 中位值）: latency=1657.073/2445.859/3056.456；balanced=1646.141/2573.537/2892.663；throughput=1491.917/2740.315/2987.059
+- cpu/mem（proxy-v2 中位值）: latency CPU 4.622~4.844% 内存 21.995~24.46MB；balanced CPU 3.078~3.433% 内存 20.356~24.786MB；throughput CPU 2.556~2.9% 内存 21.931~24.524MB
+结论：balanced 作为默认档更稳妥（c120 p95 最优且 CPU 显著低于 latency）；throughput CPU 最低但 c120/c160 尾延迟波动偏大；latency 在 c160 p95 有优势但 CPU 成本最高。当前建议默认保持 balanced，按场景再切换 latency/throughput
 是否回滚：否
 ```
