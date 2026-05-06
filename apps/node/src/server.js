@@ -29,6 +29,9 @@ const h2MaxHeaderListSize = Number(cfg.h2MaxHeaderListSize || 64 * 1024);
 const h2EnableConnectProtocol = cfg.h2EnableConnectProtocol === true;
 const enableProxyV2 = cfg.enableProxyV2 === true;
 const userActivityUpdateIntervalMs = Math.max(1000, Number(cfg.userActivityUpdateIntervalMs || 60000));
+const defaultMaxDevices = Math.max(1, Math.floor(Number(cfg.defaultMaxDevices || 1)));
+const deviceLeaseTtlMs = Math.max(5000, Math.floor(Number(cfg.deviceLeaseTtlMs || 90000)));
+const deviceLimitPolicy = String(cfg.deviceLimitPolicy || 'reject').trim().toLowerCase() === 'kick_oldest' ? 'kick_oldest' : 'reject';
 const usersFilePath = cfg.authUsersFile ? resolvePath(cfg.__configDir, cfg.authUsersFile) : '';
 const staticAuthTokens = Array.isArray(cfg.authTokens)
   ? cfg.authTokens.map((v) => String(v || '').trim()).filter((v) => v)
@@ -37,9 +40,11 @@ const userStore = new UserStore({
   filePath: usersFilePath,
   authTokens: staticAuthTokens,
   logger,
-  reloadIntervalMs: cfg.authUsersReloadIntervalMs || 5000
+  reloadIntervalMs: cfg.authUsersReloadIntervalMs || 5000,
+  defaultMaxDevices
 });
 const userRuntime = new Map();
+const userDeviceLeases = new Map();
 
 const stats = {
   streamTotal: 0,
@@ -103,6 +108,7 @@ function getUserRuntimeRecord(authUser) {
       userId: id,
       username: String(authUser && authUser.username ? authUser.username : ''),
       activeConnections: 0,
+      activeDevices: 0,
       lastSeenAtMs: 0,
       lastActiveAtMs: 0
     });
@@ -114,9 +120,95 @@ function getUserRuntimeRecord(authUser) {
   return record;
 }
 
+function normalizeClientInstanceId(value, remotePeer) {
+  const raw = String(value || '').trim();
+  if (raw) {
+    return raw.slice(0, 128);
+  }
+  const remoteIp = String(remotePeer || '').split(':')[0] || 'unknown';
+  return `legacy:${remoteIp}`;
+}
+
+function pruneUserDeviceLeases(userId, now) {
+  const uid = String(userId || '').trim();
+  if (!uid || !userDeviceLeases.has(uid)) return;
+  const leases = userDeviceLeases.get(uid);
+  leases.forEach((lastSeenAtMs, clientId) => {
+    if (now - Number(lastSeenAtMs || 0) > deviceLeaseTtlMs) {
+      leases.delete(clientId);
+    }
+  });
+  if (leases.size === 0) {
+    userDeviceLeases.delete(uid);
+  }
+}
+
+function getUserDeviceMap(userId) {
+  const uid = String(userId || '').trim();
+  if (!uid) return null;
+  if (!userDeviceLeases.has(uid)) {
+    userDeviceLeases.set(uid, new Map());
+  }
+  return userDeviceLeases.get(uid);
+}
+
+function calcMaxDevices(authUser) {
+  const fromUser = Number(authUser && authUser.maxDevices);
+  if (Number.isFinite(fromUser) && fromUser >= 1) {
+    return Math.floor(fromUser);
+  }
+  return defaultMaxDevices;
+}
+
+function touchDeviceLease(authUser, clientId) {
+  const uid = String(authUser && authUser.id ? authUser.id : '').trim();
+  if (!uid || !clientId) return { ok: true, activeDevices: 0, maxDevices: calcMaxDevices(authUser) };
+  const now = Date.now();
+  pruneUserDeviceLeases(uid, now);
+  const leases = getUserDeviceMap(uid);
+  const maxDevices = calcMaxDevices(authUser);
+  if (leases.has(clientId)) {
+    leases.set(clientId, now);
+    return { ok: true, activeDevices: leases.size, maxDevices };
+  }
+  if (leases.size < maxDevices) {
+    leases.set(clientId, now);
+    return { ok: true, activeDevices: leases.size, maxDevices };
+  }
+  if (deviceLimitPolicy === 'kick_oldest') {
+    let oldestId = '';
+    let oldestSeen = Number.POSITIVE_INFINITY;
+    leases.forEach((lastSeenAtMs, existingClientId) => {
+      const t = Number(lastSeenAtMs || 0);
+      if (t < oldestSeen) {
+        oldestSeen = t;
+        oldestId = existingClientId;
+      }
+    });
+    if (oldestId) {
+      leases.delete(oldestId);
+      leases.set(clientId, now);
+      return { ok: true, activeDevices: leases.size, maxDevices };
+    }
+  }
+  return { ok: false, activeDevices: leases.size, maxDevices };
+}
+
+function releaseDeviceLease(authUser, clientId) {
+  const uid = String(authUser && authUser.id ? authUser.id : '').trim();
+  if (!uid || !clientId || !userDeviceLeases.has(uid)) return;
+  const leases = userDeviceLeases.get(uid);
+  leases.delete(clientId);
+  if (leases.size === 0) {
+    userDeviceLeases.delete(uid);
+  }
+}
+
 function markUserSeen(authUser) {
   const record = getUserRuntimeRecord(authUser);
   record.lastSeenAtMs = Date.now();
+  pruneUserDeviceLeases(record.userId, record.lastSeenAtMs);
+  record.activeDevices = userDeviceLeases.get(record.userId)?.size || 0;
 }
 
 function markUserConnectionOpen(authUser) {
@@ -142,12 +234,15 @@ function markUserConnectionClose(authUser) {
 }
 
 function getUserRuntimeStats() {
+  const now = Date.now();
+  userDeviceLeases.forEach((_, userId) => pruneUserDeviceLeases(userId, now));
   const out = {};
   userRuntime.forEach((value, key) => {
     out[key] = {
       userId: value.userId,
       username: value.username,
       activeConnections: value.activeConnections,
+      activeDevices: userDeviceLeases.get(key)?.size || 0,
       online: value.activeConnections > 0,
       lastSeenAt: value.lastSeenAtMs ? new Date(value.lastSeenAtMs).toISOString() : null,
       lastActiveAt: value.lastActiveAtMs ? new Date(value.lastActiveAtMs).toISOString() : null
@@ -220,7 +315,7 @@ function muxWriteFrame(stream, frameType, streamID, payload) {
   return okHeader && okBody;
 }
 
-function handleProxyV2MuxStream(stream, authUser, remotePeer, streamId) {
+function handleProxyV2MuxStream(stream, authUser, clientInstanceId, remotePeer, streamId) {
   logger.info(`mux stream accepted, peer=${remotePeer}, stream=${streamId}, user=${authUser.username}`);
   stream.respond({ ':status': 200 });
   const remotes = new Map();
@@ -569,6 +664,7 @@ function handleProxyV2MuxStream(stream, authUser, remotePeer, streamId) {
 
   stream.on('close', () => {
     if (stats.activeStreams > 0) stats.activeStreams -= 1;
+    releaseDeviceLease(authUser, clientInstanceId);
     outboundQueue.length = 0;
     outboundQueuedBytes = 0;
     clearFlushDelayTimer();
@@ -630,6 +726,14 @@ server.on('stream', (stream, headers) => {
   stats.activeStreams += 1;
   const remotePeer = `${stream.session.socket.remoteAddress || '-'}:${stream.session.socket.remotePort || '-'}`;
   const streamId = stream.id;
+  let authUser = null;
+  let clientInstanceId = '';
+  let leaseAcquired = false;
+  const releaseLeaseOnce = () => {
+    if (!leaseAcquired || !authUser || !clientInstanceId) return;
+    leaseAcquired = false;
+    releaseDeviceLease(authUser, clientInstanceId);
+  };
   try {
     const reqMethod = String(headers[':method'] || '');
     const reqPath = String(headers[':path'] || '');
@@ -661,7 +765,7 @@ server.on('stream', (stream, headers) => {
       stream.end();
       return;
     }
-    const authUser = authResult.user;
+    authUser = authResult.user;
     markUserSeen(authUser);
     if (isProxyV2 && String(headers['x-4px-v2'] || '') !== '1') {
       stats.routeRejectedTotal += 1;
@@ -671,8 +775,31 @@ server.on('stream', (stream, headers) => {
       stream.end();
       return;
     }
+    clientInstanceId = normalizeClientInstanceId(headers['x-client-instance-id'], remotePeer);
+    const leaseResult = touchDeviceLease(authUser, clientInstanceId);
+    if (!leaseResult.ok) {
+      stats.authRejectedTotal += 1;
+      markServerError('non-retryable');
+      logger.warn(
+        `reject device limit exceeded, peer=${remotePeer}, stream=${streamId}, path=${reqPath}, user=${authUser.username}, active_devices=${leaseResult.activeDevices}, max_devices=${leaseResult.maxDevices}, client_id=${clientInstanceId}, policy=${deviceLimitPolicy}, err_class=non-retryable`
+      );
+      stream.respond({
+        ':status': 409,
+        'content-type': 'application/json; charset=utf-8'
+      });
+      stream.end(JSON.stringify({
+        ok: false,
+        error: 'device_limit_exceeded',
+        activeDevices: leaseResult.activeDevices,
+        maxDevices: leaseResult.maxDevices
+      }));
+      return;
+    }
+    leaseAcquired = true;
+    markUserSeen(authUser);
     if (isProxyV2Mux) {
-      handleProxyV2MuxStream(stream, authUser, remotePeer, streamId);
+      handleProxyV2MuxStream(stream, authUser, clientInstanceId, remotePeer, streamId);
+      leaseAcquired = false;
       return;
     }
 
@@ -764,6 +891,7 @@ server.on('stream', (stream, headers) => {
     stream.on('close', () => {
       if (stats.activeStreams > 0) stats.activeStreams -= 1;
       markUserConnectionClose(authUser);
+      releaseLeaseOnce();
       if (!remote.destroyed) remote.destroy();
     });
     remote.on('close', () => {
@@ -777,6 +905,7 @@ server.on('stream', (stream, headers) => {
     logger.error(`bad request on stream, peer=${remotePeer}, stream=${streamId}, err_class=${errClass}`, e.message);
     stream.respond({ ':status': 400 });
     stream.end();
+    releaseLeaseOnce();
     if (stats.activeStreams > 0) stats.activeStreams -= 1;
   }
 });
@@ -789,6 +918,7 @@ server.listen(cfg.listenPort, cfg.listenHost, listenBacklog, () => {
     `h2 settings header_table_size=${h2HeaderTableSize} initial_window_size=${h2InitialWindowSize} max_concurrent_streams=${h2MaxConcurrentStreams} max_frame_size=${h2MaxFrameSize} max_header_list_size=${h2MaxHeaderListSize}`
   );
   logger.info(`proxy routes v1=/proxy v2=${enableProxyV2 ? '/proxy-v2(enabled)' : 'disabled'}`);
+  logger.info(`device limit default_max_devices=${defaultMaxDevices} lease_ttl_ms=${deviceLeaseTtlMs} policy=${deviceLimitPolicy}`);
   if (userStore.enabled) {
     logger.info(`multi-user auth enabled, users_file=${usersFilePath}`);
   }

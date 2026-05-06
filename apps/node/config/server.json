@@ -11,6 +11,9 @@
   "authUsersFile": "server.users.json",
   "authUsersReloadIntervalMs": 5000,
   "userActivityUpdateIntervalMs": 60000,
+  "defaultMaxDevices": 1,
+  "deviceLeaseTtlMs": 90000,
+  "deviceLimitPolicy": "reject",
   "admin": {
     "enabled": true,
     "listenHost": "0.0.0.0",

@@ -4,10 +4,12 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -57,6 +59,7 @@ type Config struct {
 	MuxFlushBurstBytes          int    `json:"mux_flush_burst_bytes"`
 	MuxFlushMaxDelayMS          int    `json:"mux_flush_max_delay_ms"`
 	MuxStreamDataQueue          int    `json:"mux_stream_data_queue"`
+	ClientInstanceID            string `json:"client_instance_id"`
 }
 
 type proxyRuntime struct {
@@ -64,6 +67,7 @@ type proxyRuntime struct {
 	client      *http.Client
 	upstreamURL string
 	authToken   string
+	clientID    string
 	v2Path      bool
 	mux         *muxClientRuntime
 }
@@ -225,6 +229,7 @@ const defaultClientConfigTemplate = `{
   "upstream_h2_ping_timeout_ms": 10000,
   "upstream_tls_session_cache_size": 256,
   "mux_tuning_profile": "balanced",
+  "client_instance_id": "",
   "log_level": "INFO"
 }
 `
@@ -380,10 +385,11 @@ func RunProxyWithContext(ctx context.Context, cfg *Config) error {
 		client:      client,
 		upstreamURL: fmt.Sprintf("https://%s:%d%s", cfg.UpstreamHost, cfg.UpstreamPort, cfg.UpstreamPath),
 		authToken:   cfg.AuthToken,
+		clientID:    resolveClientInstanceID(cfg),
 		v2Path:      cfg.UpstreamPath == "/proxy-v2",
 	}
 	if rt.v2Path {
-		rt.mux = newMuxClient(ctx, client, rt.upstreamURL, rt.authToken, resolveMuxTuning(cfg))
+		rt.mux = newMuxClient(ctx, client, rt.upstreamURL, rt.authToken, rt.clientID, resolveMuxTuning(cfg))
 	}
 
 	socksLn, err := net.Listen("tcp", cfg.SocksListen)
@@ -525,7 +531,7 @@ type tunnelRW struct {
 	w *io.PipeWriter
 }
 
-func newMuxClient(_ context.Context, client *http.Client, upstreamURL string, authToken string, tuning muxTuning) *muxClientRuntime {
+func newMuxClient(_ context.Context, client *http.Client, upstreamURL string, authToken string, clientID string, tuning muxTuning) *muxClientRuntime {
 	if tuning.flushInterval <= 0 || tuning.flushNotifyBytes <= 0 || tuning.flushBurstBytes <= 0 || tuning.flushMaxDelay <= 0 || tuning.streamDataQueue <= 0 {
 		tuning = defaultMuxTuningForProfile(muxProfileBalanced)
 	}
@@ -533,6 +539,7 @@ func newMuxClient(_ context.Context, client *http.Client, upstreamURL string, au
 		client:      client,
 		upstreamURL: upstreamURL,
 		authToken:   authToken,
+		clientID:    clientID,
 		tuning:      tuning,
 	}
 }
@@ -575,6 +582,7 @@ type muxClientRuntime struct {
 	client      *http.Client
 	upstreamURL string
 	authToken   string
+	clientID    string
 	tuning      muxTuning
 
 	mu                      sync.Mutex
@@ -809,6 +817,7 @@ func (m *muxClientRuntime) start(ctx context.Context) error {
 		return err
 	}
 	req.Header.Set("x-auth-token", m.authToken)
+	req.Header.Set("x-client-instance-id", m.clientID)
 	req.Header.Set("x-4px-v2", "1")
 	req.Header.Set("x-4px-v2-mode", "mux")
 
@@ -1313,10 +1322,11 @@ func runProxy(cfg *Config) error {
 		client:      client,
 		upstreamURL: fmt.Sprintf("https://%s:%d%s", cfg.UpstreamHost, cfg.UpstreamPort, cfg.UpstreamPath),
 		authToken:   cfg.AuthToken,
+		clientID:    resolveClientInstanceID(cfg),
 		v2Path:      cfg.UpstreamPath == "/proxy-v2",
 	}
 	if rt.v2Path {
-		rt.mux = newMuxClient(context.Background(), client, rt.upstreamURL, rt.authToken, resolveMuxTuning(cfg))
+		rt.mux = newMuxClient(context.Background(), client, rt.upstreamURL, rt.authToken, rt.clientID, resolveMuxTuning(cfg))
 	}
 
 	socksLn, err := net.Listen("tcp", cfg.SocksListen)
@@ -1590,6 +1600,7 @@ func openUpstreamTunnel(ctx context.Context, rt *proxyRuntime, target string) (i
 		return nil, nil, err
 	}
 	req.Header.Set("x-auth-token", rt.authToken)
+	req.Header.Set("x-client-instance-id", rt.clientID)
 	req.Header.Set("x-target-host", host)
 	req.Header.Set("x-target-port", portStr)
 	if rt.v2Path {
@@ -1618,6 +1629,27 @@ func connectionContext(cfg *Config) (context.Context, context.CancelFunc) {
 		return context.WithTimeout(context.Background(), timeout)
 	}
 	return context.WithCancel(context.Background())
+}
+
+func resolveClientInstanceID(cfg *Config) string {
+	if cfg == nil {
+		return "cli-unknown"
+	}
+	if id := strings.TrimSpace(cfg.ClientInstanceID); id != "" {
+		return id
+	}
+	hostname, err := os.Hostname()
+	if err != nil || strings.TrimSpace(hostname) == "" {
+		hostname = "unknown-host"
+	}
+	source := strings.Join([]string{
+		hostname,
+		strings.TrimSpace(cfg.UpstreamHost),
+		strings.TrimSpace(cfg.SocksListen),
+		strings.TrimSpace(cfg.HTTPListen),
+	}, "|")
+	sum := sha256.Sum256([]byte(source))
+	return "cli-" + hex.EncodeToString(sum[:8])
 }
 
 func copyPooled(dst io.Writer, src io.Reader) (int64, error) {

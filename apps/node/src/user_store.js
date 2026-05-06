@@ -12,7 +12,13 @@ function toIsoOrNull(input) {
   return d.toISOString();
 }
 
-function normalizeUser(raw, index) {
+function normalizeMaxDevices(value, fallback = 1) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return Math.max(1, Math.floor(fallback || 1));
+  return Math.max(1, Math.floor(n));
+}
+
+function normalizeUser(raw, index, defaultMaxDevices = 1) {
   if (!isObject(raw)) return null;
   const id = String(raw.id || `u_${index + 1}`).trim();
   const username = String(raw.username || '').trim();
@@ -24,17 +30,23 @@ function normalizeUser(raw, index) {
     authToken,
     enabled: raw.enabled !== false,
     expireAt: toIsoOrNull(raw.expireAt),
-    note: String(raw.note || '').trim()
+    note: String(raw.note || '').trim(),
+    maxDevices: normalizeMaxDevices(raw.maxDevices, defaultMaxDevices)
   };
 }
 
-function parseUsersPayload(payload) {
+function parseUsersPayload(payload, defaultMaxDevices) {
   if (!isObject(payload) || !Array.isArray(payload.users)) {
     return [];
   }
   return payload.users
-    .map((item, i) => normalizeUser(item, i))
+    .map((item, i) => normalizeUser(item, i, defaultMaxDevices))
     .filter((item) => item);
+}
+
+function staticUserIdFromToken(token) {
+  const digest = crypto.createHash('sha256').update(String(token || '')).digest('hex').slice(0, 12);
+  return `static_${digest}`;
 }
 
 function assertUniqueUsers(users) {
@@ -54,11 +66,11 @@ function assertUniqueUsers(users) {
   }
 }
 
-function normalizeUsersInput(nextUsers) {
+function normalizeUsersInput(nextUsers, defaultMaxDevices) {
   if (!Array.isArray(nextUsers)) throw new Error('users must be an array');
   const normalized = [];
   for (let i = 0; i < nextUsers.length; i += 1) {
-    const user = normalizeUser(nextUsers[i], i);
+    const user = normalizeUser(nextUsers[i], i, defaultMaxDevices);
     if (!user) throw new Error(`invalid user at index ${i}`);
     normalized.push(user);
   }
@@ -74,6 +86,7 @@ class UserStore {
       : [];
     this.reloadIntervalMs = Math.max(1000, Number(options.reloadIntervalMs || 5000));
     this.logger = options.logger;
+    this.defaultMaxDevices = normalizeMaxDevices(options.defaultMaxDevices, 1);
     this.users = [];
     this.lastMtimeMs = 0;
     this.lastReloadAt = 0;
@@ -107,7 +120,7 @@ class UserStore {
       }
       const text = fs.readFileSync(this.filePath, 'utf8');
       const parsed = JSON.parse(text);
-      const users = parseUsersPayload(parsed);
+      const users = parseUsersPayload(parsed, this.defaultMaxDevices);
       assertUniqueUsers(users);
       this.users = users;
       this.lastMtimeMs = stat.mtimeMs;
@@ -154,7 +167,11 @@ class UserStore {
     }
 
     if (this.authTokens.includes(value)) {
-      return { ok: true, mode: 'static', user: { id: 'static', username: 'static' } };
+      return {
+        ok: true,
+        mode: 'static',
+        user: { id: staticUserIdFromToken(value), username: 'static', maxDevices: this.defaultMaxDevices }
+      };
     }
     return { ok: false, reason: 'invalid_token' };
   }
@@ -173,9 +190,10 @@ class UserStore {
     const authToken = String(input.authToken || '').trim() || this.createToken();
     const enabled = input.enabled !== false;
     const expireAt = input.expireAt ? toIsoOrNull(input.expireAt) : null;
+    const maxDevices = normalizeMaxDevices(input.maxDevices, this.defaultMaxDevices);
     if (input.expireAt && !expireAt) throw new Error('expireAt is invalid');
 
-    const next = { id, username, authToken, enabled, expireAt, note };
+    const next = { id, username, authToken, enabled, expireAt, note, maxDevices };
     const index = this.users.findIndex((item) => item.id === id);
     const snapshot = this.users.slice();
     if (index >= 0) {
@@ -212,7 +230,7 @@ class UserStore {
 
   replaceAll(nextUsers) {
     if (!this.enabled) throw new Error('multi-user mode is disabled');
-    const normalized = normalizeUsersInput(nextUsers);
+    const normalized = normalizeUsersInput(nextUsers, this.defaultMaxDevices);
     this.users = normalized;
     this.save();
     return this.list();
@@ -221,7 +239,7 @@ class UserStore {
   previewImport(nextUsers, mode) {
     if (!this.enabled) throw new Error('multi-user mode is disabled');
     const importMode = mode === 'replace' ? 'replace' : 'merge';
-    const normalized = normalizeUsersInput(nextUsers);
+    const normalized = normalizeUsersInput(nextUsers, this.defaultMaxDevices);
     if (importMode === 'replace') {
       const incomingIdSet = new Set(normalized.map((item) => item.id));
       const removed = this.users.filter((item) => !incomingIdSet.has(item.id)).length;
@@ -261,7 +279,7 @@ class UserStore {
     if (!this.enabled) throw new Error('multi-user mode is disabled');
     const preview = this.previewImport(nextUsers, mode);
     const importMode = preview.mode;
-    const normalized = normalizeUsersInput(nextUsers);
+    const normalized = normalizeUsersInput(nextUsers, this.defaultMaxDevices);
     if (importMode === 'replace') {
       this.users = normalized;
       this.save();

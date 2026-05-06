@@ -116,6 +116,7 @@ function renderAdminPage(users) {
     <div class="row">
       <input id="new-username" placeholder="用户名" />
       <input id="new-auth-token" placeholder="AuthToken（留空自动生成）" />
+      <input id="new-max-devices" type="number" min="1" step="1" value="1" placeholder="设备上限" />
       <input id="new-expireAt" type="datetime-local" />
       <input id="new-note" placeholder="备注" />
       <button id="create-btn">新增用户</button>
@@ -136,10 +137,11 @@ function renderAdminPage(users) {
         <option value="20" selected>每页 20</option>
         <option value="50">每页 50</option>
       </select>
+      <button id="refresh-users-btn">刷新用户状态</button>
     </div>
     <table>
       <thead>
-        <tr><th>ID</th><th>用户名</th><th>在线</th><th>连接数</th><th>最近活跃</th><th>AuthToken</th><th>启用</th><th>到期时间</th><th>备注</th><th>操作</th></tr>
+        <tr><th>ID</th><th>用户名</th><th>在线</th><th>连接数</th><th>活跃设备</th><th>设备上限</th><th>最近活跃</th><th>AuthToken</th><th>启用</th><th>到期时间</th><th>备注</th><th>操作</th></tr>
       </thead>
       <tbody id="user-rows"></tbody>
     </table>
@@ -512,6 +514,8 @@ function renderAdminPage(users) {
           + '<td><input data-field="username" data-id="' + u.id + '" value="' + (u.username || '') + '" /></td>'
           + '<td>' + (u.online ? '在线' : '离线') + '</td>'
           + '<td>' + Number(u.activeConnections || 0) + '</td>'
+          + '<td>' + Number(u.activeDevices || 0) + '</td>'
+          + '<td><input data-field="maxDevices" data-id="' + u.id + '" type="number" min="1" step="1" value="' + Number(u.maxDevices || 1) + '" /></td>'
           + '<td>' + formatDateTime(u.lastActiveAt || u.lastSeenAt) + '</td>'
           + '<td><input data-field="authToken" data-id="' + u.id + '" value="' + (u.authToken || '') + '" /></td>'
           + '<td><input type="checkbox" data-field="enabled" data-id="' + u.id + '" ' + checked + ' /></td>'
@@ -581,6 +585,7 @@ function renderAdminPage(users) {
               username: rowValue(id, 'username'),
               authToken: rowValue(id, 'authToken'),
               enabled: rowValue(id, 'enabled'),
+              maxDevices: Number(rowValue(id, 'maxDevices') || 1),
               expireAt: rowValue(id, 'expireAt') || null,
               note: rowValue(id, 'note')
             })
@@ -616,6 +621,7 @@ function renderAdminPage(users) {
               username: rowValue(id, 'username'),
               authToken: rowValue(id, 'authToken'),
               enabled: rowValue(id, 'enabled'),
+              maxDevices: Number(rowValue(id, 'maxDevices') || 1),
               expireAt: nextExpire.toISOString(),
               note: rowValue(id, 'note')
             })
@@ -654,6 +660,7 @@ function renderAdminPage(users) {
           body: JSON.stringify({
             username: (document.getElementById('new-username').value || '').trim(),
             authToken: (document.getElementById('new-auth-token').value || '').trim(),
+            maxDevices: Number(document.getElementById('new-max-devices').value || 1),
             enabled: true,
             expireAt: (document.getElementById('new-expireAt').value || '').trim() || null,
             note: (document.getElementById('new-note').value || '').trim()
@@ -661,6 +668,7 @@ function renderAdminPage(users) {
         });
         document.getElementById('new-username').value = '';
         document.getElementById('new-auth-token').value = '';
+        document.getElementById('new-max-devices').value = '1';
         document.getElementById('new-expireAt').value = '';
         document.getElementById('new-note').value = '';
         await reload();
@@ -700,6 +708,13 @@ function renderAdminPage(users) {
     });
     document.getElementById('refresh-resource-btn').addEventListener('click', () => {
       loadResources();
+    });
+    document.getElementById('refresh-users-btn').addEventListener('click', async () => {
+      try {
+        await reload();
+      } catch (err) {
+        alert(err.message);
+      }
     });
     document.getElementById('refresh-log-btn').addEventListener('click', () => {
       loadServerLogs();

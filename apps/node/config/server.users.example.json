@@ -5,6 +5,7 @@
       "username": "demo-user",
       "authToken": "change-me-user-token",
       "enabled": true,
+      "maxDevices": 1,
       "expireAt": null,
       "note": "example account"
     }

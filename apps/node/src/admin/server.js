@@ -384,6 +384,7 @@ function startAdminServer(options) {
             ...item,
             online: extra.online === true,
             activeConnections: Number(extra.activeConnections || 0),
+            activeDevices: Number(extra.activeDevices || 0),
             lastSeenAt: extra.lastSeenAt || null,
             lastActiveAt: extra.lastActiveAt || null
           };
