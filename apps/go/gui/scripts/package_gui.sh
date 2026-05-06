@@ -40,11 +40,6 @@ if [[ ! -x "$WAILS_CMD" && "$WAILS_CMD" != "wails" ]]; then
   exit 1
 fi
 
-if ! command -v zip >/dev/null 2>&1; then
-  echo "zip command not found." >&2
-  exit 1
-fi
-
 echo "Building GUI package..."
 (cd "$ROOT_DIR" && "$WAILS_CMD" build -clean)
 
@@ -68,13 +63,15 @@ else
 fi
 
 mkdir -p "$RELEASE_DIR"
-ARTIFACT="4px-gui_${VERSION}_${PLATFORM}_${ARCH}_${GITSHA}.zip"
+ARTIFACT="4px-client_${VERSION}_${PLATFORM}_${ARCH}_${GITSHA}"
 ARTIFACT_PATH="$RELEASE_DIR/$ARTIFACT"
 
 echo "Packaging: $ARTIFACT_PATH"
-(cd "$(dirname "$APP_PATH")" && zip -qry "$ARTIFACT_PATH" "$(basename "$APP_PATH")")
+rm -rf "$ARTIFACT_PATH"
+mkdir -p "$ARTIFACT_PATH"
+cp -R "$APP_PATH" "$ARTIFACT_PATH/"
 
-META_PATH="$RELEASE_DIR/${ARTIFACT%.zip}.meta.txt"
+META_PATH="$RELEASE_DIR/${ARTIFACT}.meta.txt"
 {
   echo "artifact=$ARTIFACT"
   echo "version=$VERSION"
@@ -86,5 +83,5 @@ META_PATH="$RELEASE_DIR/${ARTIFACT%.zip}.meta.txt"
 } > "$META_PATH"
 
 echo "Done."
-echo "zip:  $ARTIFACT_PATH"
+echo "dir:  $ARTIFACT_PATH"
 echo "meta: $META_PATH"

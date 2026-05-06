@@ -54,7 +54,7 @@ jobs:
           $wails = "$(go env GOPATH)\bin\wails.exe"
           & $wails build -clean
 
-      - name: Package artifact (macOS)
+      - name: Prepare artifact metadata (macOS)
         if: runner.os == 'macOS'
         shell: bash
         run: |
@@ -68,25 +68,20 @@ jobs:
           esac
           APP_PATH="$(find apps/go/gui/build/bin -maxdepth 1 -name "*.app" -type d | head -n 1)"
           test -n "$APP_PATH"
-          ARTIFACT="4px-gui_${VERSION}_darwin_${ARCH}_${GITSHA}.zip"
-          mkdir -p apps/go/gui/releases
-          (cd "$(dirname "$APP_PATH")" && zip -qry "../../releases/$ARTIFACT" "$(basename "$APP_PATH")")
-          echo "ARTIFACT_PATH=apps/go/gui/releases/$ARTIFACT" >> "$GITHUB_ENV"
+          ARTIFACT="4px-client_${VERSION}_darwin_${ARCH}_${GITSHA}"
+          echo "ARTIFACT_PATH=$APP_PATH" >> "$GITHUB_ENV"
           echo "ARTIFACT_NAME=$ARTIFACT" >> "$GITHUB_ENV"
 
-      - name: Package artifact (Windows)
+      - name: Prepare artifact metadata (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $version = "${{ inputs.version }}"
           $gitsha = (git rev-parse --short HEAD).Trim()
-          $releaseDir = "apps/go/gui/releases"
-          New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
-          $artifact = "4px-gui_${version}_windows_amd64_${gitsha}.zip"
+          $artifact = "4px-client_${version}_windows_amd64_${gitsha}"
           $binDir = "apps/go/gui/build/bin"
           if (-not (Test-Path $binDir)) { throw "build/bin not found" }
-          Compress-Archive -Path "$binDir\*" -DestinationPath "$releaseDir\$artifact" -Force
-          "ARTIFACT_PATH=$releaseDir/$artifact" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "ARTIFACT_PATH=$binDir/*" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "ARTIFACT_NAME=$artifact" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Upload artifact

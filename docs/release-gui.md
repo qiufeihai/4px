@@ -4,17 +4,17 @@
 
 ## 命名规范
 
-GUI 发布包文件名统一为：
+GUI 发布目录命名统一为：
 
 ```text
-4px-gui_<version>_<platform>_<arch>_<gitsha>.zip
+4px-client_<version>_<platform>_<arch>_<gitsha>
 ```
 
 示例：
 
 ```text
-4px-gui_v0.6.0_darwin_arm64_a1b2c3d.zip
-4px-gui_20260505-121500_darwin_arm64_a1b2c3d.zip
+4px-client_v0.6.0_darwin_arm64_a1b2c3d
+4px-client_20260505-121500_darwin_arm64_a1b2c3d
 ```
 
 字段说明：
@@ -47,7 +47,7 @@ cd apps/go/gui
 脚本会执行：
 - 自动调用 `wails build -clean`；
 - 从 `build/bin/*.app` 取最新 GUI 产物；
-- 产出 zip 到 `apps/go/gui/releases/`；
+- 在 `apps/go/gui/releases/` 产出一个发布目录（内含 `.app`）；
 - 同目录生成一个 `*.meta.txt` 元数据文件。
 
 ## 发布前最小检查
@@ -71,7 +71,7 @@ seq 200 | xargs -P 40 -I{} sh -c 'curl -sS -o /dev/null -x http://127.0.0.1:7788
 ## 回滚约定
 
 - 保留上一个稳定发布包（至少 1 个）。
-- 新版本异常时直接回滚到上个 zip 包；
+- 新版本异常时直接回滚到上个发布目录（或其归档）；
 - 运行中链路异常可改配置回退到 `/proxy`。
 
 ## 发布到 GitHub（手动）
@@ -96,7 +96,7 @@ cd apps/go/gui
 ```
 
 打包后文件在：
-- `apps/go/gui/releases/*.zip`
+- `apps/go/gui/releases/4px-client_<version>_darwin_<arch>_<gitsha>/`
 - `apps/go/gui/releases/*.meta.txt`
 
 可选方案（当你本地没有 Windows 构建环境）：
@@ -104,8 +104,8 @@ cd apps/go/gui
 - 使用 GitHub Actions 工作流：`.github/workflows/gui-build.yml`
 - 在仓库页面 `Actions` -> `GUI Build Artifacts` -> `Run workflow`
 - 输入版本号（如 `v0.6.0`）后触发
-- 工作流会在 `macos-latest` 和 `windows-latest` 分别构建并上传 zip artifact
-- 你再从 workflow artifacts 下载并上传到同一个 GitHub Release
+- 工作流会在 `macos-latest` 和 `windows-latest` 分别构建并上传原始产物 artifact（不再额外套内层 zip）
+- 你从 workflow artifacts 下载后只需解压一次，再上传到同一个 GitHub Release
 
 触发细节（页面操作）：
 
@@ -115,8 +115,8 @@ cd apps/go/gui
 4. 选择分支（建议 `main`）。
 5. 在 `version` 输入版本（如 `v0.6.0`），点击确认运行。
 6. 等待两个 job（macOS、Windows）都完成为绿色 `Success`。
-7. 进入该次 workflow run 页面，在 `Artifacts` 区域下载两个 zip 包。
-8. 把这两个 zip 上传到同一个 Release。
+7. 进入该次 workflow run 页面，在 `Artifacts` 区域下载两个 artifact 压缩包（GitHub 下载包）。
+8. 每个平台只需解压一次，取出应用产物后上传到同一个 Release。
 
 常见问题：
 
@@ -136,15 +136,16 @@ cd apps/go/gui
 - `Release title` 填：`v0.6.0`
 - 描述区填本次变更摘要（可参考下方模板）
 - 上传发布文件：
-  - `4px-gui_v0.6.0_darwin_<arch>_<gitsha>.zip`
-  - `4px-gui_v0.6.0_windows_amd64_<gitsha>.zip`（若使用 workflow 构建）
-  - `4px-gui_v0.6.0_darwin_<arch>_<gitsha>.meta.txt`（本地脚本产物）
+  - 本地脚本产物目录：`4px-client_v0.6.0_darwin_<arch>_<gitsha>/`
+  - workflow 产物（mac）：`4px-client_v0.6.0_darwin_<arch>_<gitsha>`（artifact 名称）
+  - workflow 产物（win）：`4px-client_v0.6.0_windows_amd64_<gitsha>`（artifact 名称）
+  - `4px-client_v0.6.0_darwin_<arch>_<gitsha>.meta.txt`（本地脚本产物）
 - 点击 `Publish release`
 
 4. 发布后自检
 
-- 在 Releases 页面下载刚发布的 zip；
-- 本地解压后确认应用可启动；
+- 在 Releases 页面下载刚发布的产物；
+- 确认应用可启动；
 - 按“发布前最小检查”再做一次健康验证。
 
 ## Release Note 模板
@@ -162,7 +163,8 @@ cd apps/go/gui
 - Proxy health check passed (rate >= 99%).
 
 ### Artifacts
-- 4px-gui_v0.6.0_darwin_<arch>_<gitsha>.zip
-- 4px-gui_v0.6.0_windows_amd64_<gitsha>.zip
-- 4px-gui_v0.6.0_darwin_<arch>_<gitsha>.meta.txt
+- 4px-client_v0.6.0_darwin_<arch>_<gitsha>
+- 4px-client_v0.6.0_darwin_<arch>_<gitsha> (workflow artifact)
+- 4px-client_v0.6.0_windows_amd64_<gitsha> (workflow artifact)
+- 4px-client_v0.6.0_darwin_<arch>_<gitsha>.meta.txt
 ```

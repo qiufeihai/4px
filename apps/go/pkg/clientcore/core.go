@@ -2,6 +2,7 @@ package clientcore
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -22,8 +23,11 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf16"
+	"unicode/utf8"
 
 	"golang.org/x/net/http2"
+	"golang.org/x/text/encoding/simplifiedchinese"
 )
 
 type Config struct {
@@ -1474,15 +1478,58 @@ func macNetworkServices() ([]string, error) {
 func runOutput(name string, args ...string) (string, error) {
 	logf("DEBUG", "exec: %s %s", name, strings.Join(args, " "))
 	cmd := exec.Command(name, args...) // nolint:gosec
-	out, err := cmd.CombinedOutput()
+	outRaw, err := cmd.CombinedOutput()
+	out := decodeCommandOutput(outRaw)
 	if err != nil {
-		logf("ERROR", "exec failed: %s %s output=%s", name, strings.Join(args, " "), strings.TrimSpace(string(out)))
-		return string(out), fmt.Errorf("%s %v failed: %w, output=%s", name, args, err, strings.TrimSpace(string(out)))
+		logf("ERROR", "exec failed: %s %s output=%s", name, strings.Join(args, " "), strings.TrimSpace(out))
+		return out, fmt.Errorf("%s %v failed: %w, output=%s", name, args, err, strings.TrimSpace(out))
 	}
-	if len(strings.TrimSpace(string(out))) > 0 {
-		logf("DEBUG", "exec output: %s", strings.TrimSpace(string(out)))
+	if len(strings.TrimSpace(out)) > 0 {
+		logf("DEBUG", "exec output: %s", strings.TrimSpace(out))
 	}
-	return string(out), nil
+	return out, nil
+}
+
+func decodeCommandOutput(raw []byte) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	if utf8.Valid(raw) {
+		return string(raw)
+	}
+	if utf16Text, ok := tryDecodeUTF16(raw); ok {
+		return utf16Text
+	}
+	if runtime.GOOS == "windows" {
+		if gbkText, err := simplifiedchinese.GBK.NewDecoder().Bytes(raw); err == nil && utf8.Valid(gbkText) {
+			return string(gbkText)
+		}
+	}
+	return string(bytes.ToValidUTF8(raw, []byte("�")))
+}
+
+func tryDecodeUTF16(raw []byte) (string, bool) {
+	if len(raw) < 2 || len(raw)%2 != 0 {
+		return "", false
+	}
+	le := bytes.HasPrefix(raw, []byte{0xff, 0xfe})
+	be := bytes.HasPrefix(raw, []byte{0xfe, 0xff})
+	if !le && !be {
+		return "", false
+	}
+	words := make([]uint16, 0, len(raw)/2)
+	start := 0
+	if le || be {
+		start = 2
+	}
+	for i := start; i+1 < len(raw); i += 2 {
+		if le {
+			words = append(words, binary.LittleEndian.Uint16(raw[i:i+2]))
+		} else {
+			words = append(words, binary.BigEndian.Uint16(raw[i:i+2]))
+		}
+	}
+	return string(utf16.Decode(words)), true
 }
 
 func splitHostPort(addr string) (string, int, error) {
