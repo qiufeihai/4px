@@ -13,7 +13,7 @@
   "userActivityUpdateIntervalMs": 60000,
   "admin": {
     "enabled": true,
-    "listenHost": "127.0.0.1",
+    "listenHost": "0.0.0.0",
     "listenPort": 6688,
     "token": "change-me-admin-token",
     "serviceControl": {
