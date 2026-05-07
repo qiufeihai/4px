@@ -23,6 +23,7 @@
   "logLevel": "WARN",
   "maxBufferedBytes": 4194304,
   "metricsIntervalMs": 30000,
+  "establishWarnThresholdMs": 1500,
   "listenBacklog": 4096,
   "h2HeaderTableSize": 4096,
   "h2InitialWindowSize": 1048576,

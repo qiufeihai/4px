@@ -102,6 +102,7 @@ node bin/4px.js client -c config/client.json
 - `listenBacklog`：监听 backlog
 - `maxBufferedBytes`：单连接写缓冲上限
 - `metricsIntervalMs`：指标日志输出周期
+- `establishWarnThresholdMs`：建链慢日志阈值（毫秒，默认 `1500`，超过会打印 `slow establish` 警告）
 - `remoteConnectTimeoutMs`：到目标地址连接超时
 - `remoteIdleTimeoutMs`：目标连接空闲超时（`0` 表示关闭）
 - `streamIdleTimeoutMs`：H2 stream 空闲超时（`0` 表示关闭）

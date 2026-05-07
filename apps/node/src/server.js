@@ -19,6 +19,7 @@ const streamIdleTimeoutMs = Number.isFinite(Number(cfg.streamIdleTimeoutMs)) ? N
 const maxBufferedBytes = cfg.maxBufferedBytes || 4 * 1024 * 1024;
 const metricsIntervalMs = cfg.metricsIntervalMs || 30000;
 const listenBacklog = cfg.listenBacklog || 4096;
+const establishWarnThresholdMs = Math.max(200, Number(cfg.establishWarnThresholdMs || 1500));
 const h2HeaderTableSize = Number(cfg.h2HeaderTableSize || 4096);
 const h2InitialWindowSize = Number(cfg.h2InitialWindowSize || 1024 * 1024);
 const h2MaxConcurrentStreams = Number(cfg.h2MaxConcurrentStreams || 1024);
@@ -313,6 +314,10 @@ server.on('stream', (stream, headers) => {
   stats.activeStreams += 1;
   const remotePeer = `${stream.session.socket.remoteAddress || '-'}:${stream.session.socket.remotePort || '-'}`;
   const streamId = stream.id;
+  const acceptedAtMs = Date.now();
+  let remoteConnectedAtMs = 0;
+  let firstRemoteDataAtMs = 0;
+  let establishWarnLogged = false;
   let authUser = null;
   let clientInstanceId = '';
   let leaseAcquired = false;
@@ -392,8 +397,16 @@ server.on('stream', (stream, headers) => {
     remote.once('connect', () => {
       clearTimeout(connectTimeoutTimer);
       responded = true;
+      remoteConnectedAtMs = Date.now();
       stats.remoteConnectSuccessTotal += 1;
       logger.info(`remote connected, stream=${streamId}, target=${host}:${port}`);
+      const connectMs = remoteConnectedAtMs - acceptedAtMs;
+      if (!establishWarnLogged && connectMs >= establishWarnThresholdMs) {
+        establishWarnLogged = true;
+        logger.warn(
+          `slow establish connect, stream=${streamId}, peer=${remotePeer}, target=${host}:${port}, connect_ms=${connectMs}, threshold_ms=${establishWarnThresholdMs}`
+        );
+      }
       if (remoteIdleTimeoutMs > 0) {
         remote.setTimeout(remoteIdleTimeoutMs, () => {
           stats.remoteIdleTimeoutTotal += 1;
@@ -425,6 +438,17 @@ server.on('stream', (stream, headers) => {
     remote.on('drain', () => stream.resume());
 
     remote.on('data', (chunk) => {
+      if (firstRemoteDataAtMs === 0) {
+        firstRemoteDataAtMs = Date.now();
+        const ttfbMs = firstRemoteDataAtMs - acceptedAtMs;
+        const connectMs = remoteConnectedAtMs > 0 ? remoteConnectedAtMs - acceptedAtMs : -1;
+        if (!establishWarnLogged && ttfbMs >= establishWarnThresholdMs) {
+          establishWarnLogged = true;
+          logger.warn(
+            `slow establish first_byte, stream=${streamId}, peer=${remotePeer}, target=${host}:${port}, ttfb_ms=${ttfbMs}, connect_ms=${connectMs}, threshold_ms=${establishWarnThresholdMs}`
+          );
+        }
+      }
       markUserConnectionActive(authUser);
       const ok = stream.write(chunk);
       if (!ok) remote.pause();
