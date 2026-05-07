@@ -25,11 +25,6 @@
   "metricsIntervalMs": 30000,
   "establishWarnThresholdMs": 1500,
   "establishWarnMinIntervalMs": 5000,
-  "videoFirstByteTimeoutMs": 5000,
-  "videoConnectTimeoutMs": 5000,
-  "videoFirstByteTimeoutDomains": [
-    "googlevideo.com"
-  ],
   "listenBacklog": 4096,
   "h2HeaderTableSize": 4096,
   "h2InitialWindowSize": 1048576,

@@ -104,9 +104,6 @@ node bin/4px.js client -c config/client.json
 - `metricsIntervalMs`：指标日志输出周期
 - `establishWarnThresholdMs`：建链慢日志阈值（毫秒，默认 `1500`，超过会打印 `slow establish` 警告）
 - `establishWarnMinIntervalMs`：同目标慢建链日志最小间隔（毫秒，默认 `5000`，用于限频降噪）
-- `videoFirstByteTimeoutMs`：视频域名首包超时快速失败阈值（毫秒，`0` 关闭；生产建议从 `5000` 开始）
-- `videoConnectTimeoutMs`：视频域名建连快速失败阈值（毫秒，`0` 关闭；建议从 `5000` 开始）
-- `videoFirstByteTimeoutDomains`：启用首包超时策略的域名列表（例如 `googlevideo.com`）
 - `remoteConnectTimeoutMs`：到目标地址连接超时
 - `remoteIdleTimeoutMs`：目标连接空闲超时（`0` 表示关闭）
 - `streamIdleTimeoutMs`：H2 stream 空闲超时（`0` 表示关闭）
@@ -162,7 +159,6 @@ LOG_LEVEL=WARN node bin/4px.js client -c config/client.json
   - `connect_ms` 高：优先排查建连/DNS/出口网络。
   - `connect_ms` 低但 `ttfb_ms` 高：优先排查目标站/CDN 首包链路。
 - 服务端日志已支持 `trace_id`，可与 Go 客户端日志对齐分析同一请求。
-- 若视频域名首包波动明显，可启用 `videoFirstByteTimeoutMs`（建议从 `3000` 开始）并限定 `videoFirstByteTimeoutDomains`，避免全站误杀。
 - `establishWarnMinIntervalMs` 用于慢日志限频，降低日志风暴对事件循环的影响。
 
 鉴权失败排查：
