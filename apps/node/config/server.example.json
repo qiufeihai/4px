@@ -38,6 +38,7 @@
   "establishWarnThresholdMs": 1500,
   "establishWarnMinIntervalMs": 5000,
   "videoFirstByteTimeoutMs": 3000,
+  "videoConnectTimeoutMs": 5000,
   "videoFirstByteTimeoutDomains": [
     "googlevideo.com"
   ],

@@ -22,6 +22,7 @@ const listenBacklog = cfg.listenBacklog || 4096;
 const establishWarnThresholdMs = Math.max(200, Number(cfg.establishWarnThresholdMs || 1500));
 const establishWarnMinIntervalMs = Math.max(200, Number(cfg.establishWarnMinIntervalMs || 5000));
 const slowEstablishTopN = Math.max(1, Math.floor(Number(cfg.slowEstablishTopN || 5)));
+const videoConnectTimeoutMs = Math.max(0, Number(cfg.videoConnectTimeoutMs || 0));
 const videoFirstByteTimeoutMs = Math.max(0, Number(cfg.videoFirstByteTimeoutMs || 0));
 const videoFirstByteTimeoutDomains = (() => {
   const raw = cfg.videoFirstByteTimeoutDomains;
@@ -111,6 +112,13 @@ function shouldApplyVideoFirstByteTimeout(host, port) {
   return videoFirstByteTimeoutDomains.some((domain) => hostMatchesDomain(host, domain));
 }
 
+function shouldApplyVideoConnectTimeout(host, port) {
+  if (videoConnectTimeoutMs <= 0) return false;
+  if (Number(port) !== 443) return false;
+  if (videoFirstByteTimeoutDomains.length === 0) return false;
+  return videoFirstByteTimeoutDomains.some((domain) => hostMatchesDomain(host, domain));
+}
+
 const stats = {
   streamTotal: 0,
   activeStreams: 0,
@@ -121,6 +129,7 @@ const stats = {
   remoteConnectErrorTotal: 0,
   remoteConnectTimeoutTotal: 0,
   remoteIdleTimeoutTotal: 0,
+  videoConnectTimeoutTotal: 0,
   videoFirstByteTimeoutTotal: 0,
   bufferOverflowTotal: 0,
   retryableErrorTotal: 0,
@@ -131,7 +140,7 @@ loopDelay.enable();
 
 setInterval(() => {
   logger.info(
-    `metrics stream_total=${stats.streamTotal} active_streams=${stats.activeStreams} route_reject=${stats.routeRejectedTotal} auth_reject=${stats.authRejectedTotal} target_parse_fail=${stats.targetParseFailTotal} remote_ok=${stats.remoteConnectSuccessTotal} remote_error=${stats.remoteConnectErrorTotal} remote_connect_timeout=${stats.remoteConnectTimeoutTotal} remote_idle_timeout=${stats.remoteIdleTimeoutTotal} video_first_byte_timeout=${stats.videoFirstByteTimeoutTotal} buffer_overflow=${stats.bufferOverflowTotal} retryable_err=${stats.retryableErrorTotal} non_retryable_err=${stats.nonRetryableErrorTotal} eventloop_p95_ms=${(loopDelay.percentile(95) / 1e6).toFixed(2)}`
+    `metrics stream_total=${stats.streamTotal} active_streams=${stats.activeStreams} route_reject=${stats.routeRejectedTotal} auth_reject=${stats.authRejectedTotal} target_parse_fail=${stats.targetParseFailTotal} remote_ok=${stats.remoteConnectSuccessTotal} remote_error=${stats.remoteConnectErrorTotal} remote_connect_timeout=${stats.remoteConnectTimeoutTotal} remote_idle_timeout=${stats.remoteIdleTimeoutTotal} video_connect_timeout=${stats.videoConnectTimeoutTotal} video_first_byte_timeout=${stats.videoFirstByteTimeoutTotal} buffer_overflow=${stats.bufferOverflowTotal} retryable_err=${stats.retryableErrorTotal} non_retryable_err=${stats.nonRetryableErrorTotal} eventloop_p95_ms=${(loopDelay.percentile(95) / 1e6).toFixed(2)}`
   );
   loopDelay.reset();
 }, metricsIntervalMs).unref();
@@ -467,6 +476,7 @@ server.on('stream', (stream, headers) => {
     leaseAcquired = true;
     markUserSeen(authUser);
     const { host, port } = parseTarget(headers);
+    const enableVideoConnectTimeout = shouldApplyVideoConnectTimeout(host, port);
     const enableVideoFirstByteTimeout = shouldApplyVideoFirstByteTimeout(host, port);
     let firstByteTimeoutTimer = null;
     const clearFirstByteTimeout = () => {
@@ -483,12 +493,18 @@ server.on('stream', (stream, headers) => {
     remote.setNoDelay(true);
     remote.setKeepAlive(true, remoteKeepAliveInitialDelayMs);
 
+    const connectTimeoutMs = enableVideoConnectTimeout ? Math.min(remoteConnectTimeoutMs, videoConnectTimeoutMs) : remoteConnectTimeoutMs;
     const connectTimeoutTimer = setTimeout(() => {
       stats.remoteConnectTimeoutTotal += 1;
+      if (enableVideoConnectTimeout) {
+        stats.videoConnectTimeoutTotal += 1;
+      }
       markServerError('retryable');
-      logger.warn(`remote connect timeout, trace_id=${traceId}, stream=${streamId}, target=${host}:${port}, mode=${reqPath}, err_class=retryable`);
+      logger.warn(
+        `remote connect timeout, trace_id=${traceId}, stream=${streamId}, target=${host}:${port}, mode=${reqPath}, timeout_ms=${connectTimeoutMs}, video_fast_fail=${enableVideoConnectTimeout}, err_class=retryable`
+      );
       remote.destroy(new Error('connect timeout'));
-    }, remoteConnectTimeoutMs);
+    }, connectTimeoutMs);
 
     let responded = false;
     remote.once('connect', () => {
@@ -634,6 +650,7 @@ server.listen(cfg.listenPort, cfg.listenHost, listenBacklog, () => {
     `h2 settings header_table_size=${h2HeaderTableSize} initial_window_size=${h2InitialWindowSize} max_concurrent_streams=${h2MaxConcurrentStreams} max_frame_size=${h2MaxFrameSize} max_header_list_size=${h2MaxHeaderListSize}`
   );
   logger.info('proxy routes v1=/proxy');
+  logger.info(`video connect timeout enabled=${videoConnectTimeoutMs > 0} timeout_ms=${videoConnectTimeoutMs} domains=${videoFirstByteTimeoutDomains.join(',') || '-'}`);
   logger.info(`video first-byte timeout enabled=${videoFirstByteTimeoutMs > 0} timeout_ms=${videoFirstByteTimeoutMs} domains=${videoFirstByteTimeoutDomains.join(',') || '-'}`);
   logger.info(`device limit default_max_devices=${defaultMaxDevices} lease_ttl_ms=${deviceLeaseTtlMs} policy=${deviceLimitPolicy}`);
   if (userStore.enabled) {

@@ -105,6 +105,7 @@ node bin/4px.js client -c config/client.json
 - `establishWarnThresholdMs`：建链慢日志阈值（毫秒，默认 `1500`，超过会打印 `slow establish` 警告）
 - `establishWarnMinIntervalMs`：同目标慢建链日志最小间隔（毫秒，默认 `5000`，用于限频降噪）
 - `videoFirstByteTimeoutMs`：视频域名首包超时快速失败阈值（毫秒，`0` 关闭；建议从 `3000` 开始）
+- `videoConnectTimeoutMs`：视频域名建连快速失败阈值（毫秒，`0` 关闭；建议从 `5000` 开始）
 - `videoFirstByteTimeoutDomains`：启用首包超时策略的域名列表（例如 `googlevideo.com`）
 - `remoteConnectTimeoutMs`：到目标地址连接超时
 - `remoteIdleTimeoutMs`：目标连接空闲超时（`0` 表示关闭）
