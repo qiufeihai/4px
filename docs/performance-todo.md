@@ -804,3 +804,18 @@ cd /Users/qiufeihai/github/4px/apps/go
 结论：在无代码改动下仍有场景波动，但中高并发趋势未推翻既有二分结论；维持最终方案：S1 回滚、S2/S3 保留、S4 回滚
 是否回滚：否（最终方案不变）
 ```
+
+```text
+日期：2026-05-07
+负责人：AI
+改动项：proxy-only 链路可观测与体验稳定性优化（trace_id 贯通、慢日志限频、日志环形缓冲、视频域名首包超时开关）
+影响范围：apps/go/pkg/clientcore/core.go, apps/go/gui/app.go, apps/go/gui/frontend/index.html, apps/node/src/server.js, apps/node/src/logger.js, apps/node/config/server*.json
+压测命令：node --check apps/node/src/server.js && node --check apps/node/src/logger.js；go test ./pkg/clientcore/... ./gui/...
+结果（前 -> 后）：
+- success_rate: 待补（本次以可观测与兜底策略为主，需部署后按最小验收矩阵采集）
+- p50/p95/p99: 待补
+- cpu/mem: 预期日志风暴场景下更平稳（已通过慢日志限频 + O(1) 日志缓冲降低抖动）
+- reconnect/errors: 新增 trace_id 贯通与 auth reason 透传，新增 video_first_byte_timeout 指标便于评估误杀与收益
+结论：已完成低风险基础优化；下一步在真实视频拖动场景验证 `videoFirstByteTimeoutMs=3000` 的体感收益与副作用，再决定是否保留
+是否回滚：待确认（按部署后验收结果）
+```

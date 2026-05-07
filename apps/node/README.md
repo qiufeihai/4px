@@ -7,9 +7,9 @@ Node 版本的 `4px` 负责核心数据面，包含：
 
 ## 核心特性
 
-- 统一数据面：同一 server 同时支持 `proxy` 与 `proxy-v2` 路由。
-- 高性能模式：`proxy-v2` + mux 多路复用，减少重复建链与头部开销。
-- 回退友好：可通过配置显式切回 `proxy`（经典单流）。
+- 统一数据面：当前版本固定 `proxy-only`（`POST /proxy`）。
+- 低抖动优先：保留经典单流转发路径，时延行为更可预测。
+- 可观测增强：支持 `trace_id` 贯通日志与慢建链诊断。
 - 运维能力：支持 Web 管理端、systemd 部署、指标日志。
 - 防护能力：内置背压处理与缓冲区上限控制，避免单连接拖垮进程。
 
@@ -103,6 +103,9 @@ node bin/4px.js client -c config/client.json
 - `maxBufferedBytes`：单连接写缓冲上限
 - `metricsIntervalMs`：指标日志输出周期
 - `establishWarnThresholdMs`：建链慢日志阈值（毫秒，默认 `1500`，超过会打印 `slow establish` 警告）
+- `establishWarnMinIntervalMs`：同目标慢建链日志最小间隔（毫秒，默认 `5000`，用于限频降噪）
+- `videoFirstByteTimeoutMs`：视频域名首包超时快速失败阈值（毫秒，`0` 关闭；建议从 `3000` 开始）
+- `videoFirstByteTimeoutDomains`：启用首包超时策略的域名列表（例如 `googlevideo.com`）
 - `remoteConnectTimeoutMs`：到目标地址连接超时
 - `remoteIdleTimeoutMs`：目标连接空闲超时（`0` 表示关闭）
 - `streamIdleTimeoutMs`：H2 stream 空闲超时（`0` 表示关闭）
@@ -151,6 +154,20 @@ LOG_LEVEL=ERROR node bin/4px.js client -c config/client.json
 LOG_LEVEL=WARN node bin/4px.js server -c config/server.json
 LOG_LEVEL=WARN node bin/4px.js client -c config/client.json
 ```
+
+排障建议（网页首开慢 / 视频拖动恢复慢）：
+
+- 先看服务端 `slow establish` 日志：
+  - `connect_ms` 高：优先排查建连/DNS/出口网络。
+  - `connect_ms` 低但 `ttfb_ms` 高：优先排查目标站/CDN 首包链路。
+- 服务端日志已支持 `trace_id`，可与 Go 客户端日志对齐分析同一请求。
+- 若视频域名首包波动明显，可启用 `videoFirstByteTimeoutMs`（建议从 `3000` 开始）并限定 `videoFirstByteTimeoutDomains`，避免全站误杀。
+- `establishWarnMinIntervalMs` 用于慢日志限频，降低日志风暴对事件循环的影响。
+
+鉴权失败排查：
+
+- 服务端在 `401` 响应头中返回 `x-auth-reason`（如 `expired_user` / `disabled_user`）。
+- Go GUI 会据此给出更明确提示（账号过期、账号禁用、token 无效），便于快速修复配置。
 
 ## Linux 一键部署（systemd）
 
