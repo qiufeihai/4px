@@ -314,6 +314,7 @@ server.on('stream', (stream, headers) => {
   stats.activeStreams += 1;
   const remotePeer = `${stream.session.socket.remoteAddress || '-'}:${stream.session.socket.remotePort || '-'}`;
   const streamId = stream.id;
+  const traceId = String(headers['x-trace-id'] || '').trim() || `srv-${streamId}`;
   const acceptedAtMs = Date.now();
   let remoteConnectedAtMs = 0;
   let firstRemoteDataAtMs = 0;
@@ -341,7 +342,7 @@ server.on('stream', (stream, headers) => {
     if (!isProxyV1) {
       stats.routeRejectedTotal += 1;
       markServerError('non-retryable');
-      logger.warn(`reject invalid route, peer=${remotePeer}, stream=${streamId}, method=${reqMethod}, path=${reqPath}, err_class=non-retryable`);
+      logger.warn(`reject invalid route, trace_id=${traceId}, peer=${remotePeer}, stream=${streamId}, method=${reqMethod}, path=${reqPath}, err_class=non-retryable`);
       stream.respond({ ':status': 404 });
       stream.end();
       return;
@@ -350,7 +351,7 @@ server.on('stream', (stream, headers) => {
     if (!authResult.ok) {
       stats.authRejectedTotal += 1;
       markServerError('non-retryable');
-      logger.warn(`reject unauthorized request, peer=${remotePeer}, stream=${streamId}, path=${reqPath}, reason=${authResult.reason}, err_class=non-retryable`);
+      logger.warn(`reject unauthorized request, trace_id=${traceId}, peer=${remotePeer}, stream=${streamId}, path=${reqPath}, reason=${authResult.reason}, err_class=non-retryable`);
       stream.respond({ ':status': 401 });
       stream.end();
       return;
@@ -363,7 +364,7 @@ server.on('stream', (stream, headers) => {
       stats.authRejectedTotal += 1;
       markServerError('non-retryable');
       logger.warn(
-        `reject device limit exceeded, peer=${remotePeer}, stream=${streamId}, path=${reqPath}, user=${authUser.username}, active_devices=${leaseResult.activeDevices}, max_devices=${leaseResult.maxDevices}, client_id=${clientInstanceId}, policy=${deviceLimitPolicy}, err_class=non-retryable`
+        `reject device limit exceeded, trace_id=${traceId}, peer=${remotePeer}, stream=${streamId}, path=${reqPath}, user=${authUser.username}, active_devices=${leaseResult.activeDevices}, max_devices=${leaseResult.maxDevices}, client_id=${clientInstanceId}, policy=${deviceLimitPolicy}, err_class=non-retryable`
       );
       stream.respond({
         ':status': 409,
@@ -381,7 +382,7 @@ server.on('stream', (stream, headers) => {
     markUserSeen(authUser);
     const { host, port } = parseTarget(headers);
     markUserConnectionOpen(authUser);
-    logger.info(`stream accepted, peer=${remotePeer}, stream=${streamId}, user=${authUser.username}, target=${host}:${port}`);
+    logger.info(`stream accepted, trace_id=${traceId}, peer=${remotePeer}, stream=${streamId}, user=${authUser.username}, target=${host}:${port}`);
     const remote = net.createConnection({ host, port });
     remote.setNoDelay(true);
     remote.setKeepAlive(true, remoteKeepAliveInitialDelayMs);
@@ -389,7 +390,7 @@ server.on('stream', (stream, headers) => {
     const connectTimeoutTimer = setTimeout(() => {
       stats.remoteConnectTimeoutTotal += 1;
       markServerError('retryable');
-      logger.warn(`remote connect timeout, stream=${streamId}, target=${host}:${port}, mode=${reqPath}, err_class=retryable`);
+      logger.warn(`remote connect timeout, trace_id=${traceId}, stream=${streamId}, target=${host}:${port}, mode=${reqPath}, err_class=retryable`);
       remote.destroy(new Error('connect timeout'));
     }, remoteConnectTimeoutMs);
 
@@ -399,19 +400,19 @@ server.on('stream', (stream, headers) => {
       responded = true;
       remoteConnectedAtMs = Date.now();
       stats.remoteConnectSuccessTotal += 1;
-      logger.info(`remote connected, stream=${streamId}, target=${host}:${port}`);
+      logger.info(`remote connected, trace_id=${traceId}, stream=${streamId}, target=${host}:${port}`);
       const connectMs = remoteConnectedAtMs - acceptedAtMs;
       if (!establishWarnLogged && connectMs >= establishWarnThresholdMs) {
         establishWarnLogged = true;
         logger.warn(
-          `slow establish connect, stream=${streamId}, peer=${remotePeer}, target=${host}:${port}, connect_ms=${connectMs}, threshold_ms=${establishWarnThresholdMs}`
+          `slow establish connect, trace_id=${traceId}, stream=${streamId}, peer=${remotePeer}, target=${host}:${port}, connect_ms=${connectMs}, threshold_ms=${establishWarnThresholdMs}`
         );
       }
       if (remoteIdleTimeoutMs > 0) {
         remote.setTimeout(remoteIdleTimeoutMs, () => {
           stats.remoteIdleTimeoutTotal += 1;
           markServerError('retryable');
-          logger.warn(`remote idle timeout, stream=${streamId}, target=${host}:${port}, mode=${reqPath}, err_class=retryable`);
+          logger.warn(`remote idle timeout, trace_id=${traceId}, stream=${streamId}, target=${host}:${port}, mode=${reqPath}, err_class=retryable`);
           remote.destroy(new Error('idle timeout'));
         });
       }
@@ -420,7 +421,7 @@ server.on('stream', (stream, headers) => {
 
     if (streamIdleTimeoutMs > 0) {
       stream.setTimeout(streamIdleTimeoutMs, () => {
-        logger.warn(`stream idle timeout, stream=${streamId}, target=${host}:${port}`);
+        logger.warn(`stream idle timeout, trace_id=${traceId}, stream=${streamId}, target=${host}:${port}`);
         stream.close();
       });
     }
@@ -431,7 +432,7 @@ server.on('stream', (stream, headers) => {
       if (!ok) stream.pause();
       if (remote.writableLength > maxBufferedBytes) {
         stats.bufferOverflowTotal += 1;
-        logger.warn(`remote buffer overflow, stream=${streamId}, bytes=${remote.writableLength}, limit=${maxBufferedBytes}`);
+        logger.warn(`remote buffer overflow, trace_id=${traceId}, stream=${streamId}, bytes=${remote.writableLength}, limit=${maxBufferedBytes}`);
         closeBoth();
       }
     });
@@ -445,7 +446,7 @@ server.on('stream', (stream, headers) => {
         if (!establishWarnLogged && ttfbMs >= establishWarnThresholdMs) {
           establishWarnLogged = true;
           logger.warn(
-            `slow establish first_byte, stream=${streamId}, peer=${remotePeer}, target=${host}:${port}, ttfb_ms=${ttfbMs}, connect_ms=${connectMs}, threshold_ms=${establishWarnThresholdMs}`
+            `slow establish first_byte, trace_id=${traceId}, stream=${streamId}, peer=${remotePeer}, target=${host}:${port}, ttfb_ms=${ttfbMs}, connect_ms=${connectMs}, threshold_ms=${establishWarnThresholdMs}`
           );
         }
       }
@@ -454,7 +455,7 @@ server.on('stream', (stream, headers) => {
       if (!ok) remote.pause();
       if (stream.writableLength > maxBufferedBytes) {
         stats.bufferOverflowTotal += 1;
-        logger.warn(`stream buffer overflow, stream=${streamId}, bytes=${stream.writableLength}, limit=${maxBufferedBytes}`);
+        logger.warn(`stream buffer overflow, trace_id=${traceId}, stream=${streamId}, bytes=${stream.writableLength}, limit=${maxBufferedBytes}`);
         closeBoth();
       }
     });
@@ -476,7 +477,7 @@ server.on('stream', (stream, headers) => {
     remote.on('error', () => {
       stats.remoteConnectErrorTotal += 1;
       markServerError('retryable');
-      logger.error(`remote connection error, stream=${streamId}, target=${host}:${port}, mode=${reqPath}, err_class=retryable`);
+      logger.error(`remote connection error, trace_id=${traceId}, stream=${streamId}, target=${host}:${port}, mode=${reqPath}, err_class=retryable`);
       if (!responded && !stream.destroyed) {
         stream.respond({ ':status': 502 });
         stream.end();
@@ -490,14 +491,14 @@ server.on('stream', (stream, headers) => {
       if (!remote.destroyed) remote.destroy();
     });
     remote.on('close', () => {
-      logger.info(`remote closed, stream=${streamId}, target=${host}:${port}`);
+      logger.info(`remote closed, trace_id=${traceId}, stream=${streamId}, target=${host}:${port}`);
       if (!stream.destroyed) stream.end();
     });
   } catch (e) {
     stats.targetParseFailTotal += 1;
     const errClass = classifyServerError(e, 'non-retryable');
     markServerError(errClass);
-    logger.error(`bad request on stream, peer=${remotePeer}, stream=${streamId}, err_class=${errClass}`, e.message);
+    logger.error(`bad request on stream, trace_id=${traceId}, peer=${remotePeer}, stream=${streamId}, err_class=${errClass}`, e.message);
     stream.respond({ ':status': 400 });
     stream.end();
     releaseLeaseOnce();
@@ -512,7 +513,7 @@ server.listen(cfg.listenPort, cfg.listenHost, listenBacklog, () => {
   logger.info(
     `h2 settings header_table_size=${h2HeaderTableSize} initial_window_size=${h2InitialWindowSize} max_concurrent_streams=${h2MaxConcurrentStreams} max_frame_size=${h2MaxFrameSize} max_header_list_size=${h2MaxHeaderListSize}`
   );
-  logger.info('proxy routes v1=/proxy v2=disabled');
+  logger.info('proxy routes v1=/proxy');
   logger.info(`device limit default_max_devices=${defaultMaxDevices} lease_ttl_ms=${deviceLeaseTtlMs} policy=${deviceLimitPolicy}`);
   if (userStore.enabled) {
     logger.info(`multi-user auth enabled, users_file=${usersFilePath}`);

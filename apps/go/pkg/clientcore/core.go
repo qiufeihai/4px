@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf16"
 	"unicode/utf8"
@@ -82,7 +83,10 @@ var (
 			return &buf
 		},
 	}
+	traceSeq atomic.Uint64
 )
+
+const upstreamEstablishWarnThresholdMS = 1500
 
 const defaultClientConfigTemplate = `{
   "socks_listen": "127.0.0.1:7777",
@@ -787,6 +791,8 @@ func openUpstreamTunnel(ctx context.Context, rt *proxyRuntime, target string) (i
 	if splitErr != nil {
 		return nil, nil, splitErr
 	}
+	startAt := time.Now()
+	traceID := nextTraceID(rt.clientID)
 	pr, pw := io.Pipe()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, rt.upstreamURL, pr)
@@ -799,18 +805,36 @@ func openUpstreamTunnel(ctx context.Context, rt *proxyRuntime, target string) (i
 	req.Header.Set("x-target-host", host)
 	req.Header.Set("x-target-port", portStr)
 	req.Header.Set("x-target", base64.RawURLEncoding.EncodeToString([]byte(target)))
+	req.Header.Set("x-trace-id", traceID)
 
 	resp, err := rt.client.Do(req)
 	if err != nil {
 		_ = pw.CloseWithError(err)
+		elapsedMS := time.Since(startAt).Milliseconds()
+		logf("WARN", "upstream establish failed trace_id=%s target=%s elapsed_ms=%d err=%v", traceID, target, elapsedMS, err)
 		return nil, nil, err
+	}
+	elapsedMS := time.Since(startAt).Milliseconds()
+	if elapsedMS >= upstreamEstablishWarnThresholdMS {
+		logf("WARN", "slow upstream establish trace_id=%s target=%s elapsed_ms=%d threshold_ms=%d", traceID, target, elapsedMS, upstreamEstablishWarnThresholdMS)
 	}
 	if resp.StatusCode != http.StatusOK {
 		_ = pw.CloseWithError(fmt.Errorf("status=%d", resp.StatusCode))
 		defer resp.Body.Close()
+		logf("WARN", "upstream rejected trace_id=%s target=%s status=%d elapsed_ms=%d", traceID, target, resp.StatusCode, elapsedMS)
 		return nil, nil, fmt.Errorf("upstream status=%d", resp.StatusCode)
 	}
 	return resp.Body, pw, nil
+}
+
+func nextTraceID(clientID string) string {
+	seq := traceSeq.Add(1)
+	now := time.Now().UnixNano()
+	normalizedClientID := strings.TrimSpace(clientID)
+	if normalizedClientID == "" {
+		normalizedClientID = "cli"
+	}
+	return fmt.Sprintf("%s-%x-%x", normalizedClientID, uint64(now), seq)
 }
 
 func connectionContext(cfg *Config) (context.Context, context.CancelFunc) {
