@@ -4,7 +4,7 @@
   "upstream": {
     "host": "your-server-ip",
     "port": 6666,
-    "path": "/proxy-v2",
+    "path": "/proxy",
     "serverName": "your-server-domain",
     "authToken": "change-me-strong-token",
     "rejectUnauthorized": true

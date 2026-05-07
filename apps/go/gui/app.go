@@ -352,7 +352,7 @@ func (a *App) readDefaultConfigTemplate() ([]byte, error) {
 		"http_listen":                 "127.0.0.1:7788",
 		"upstream_host":               "your-server-ip",
 		"upstream_port":               6666,
-		"upstream_path":               "/proxy-v2",
+		"upstream_path":               "/proxy",
 		"server_name":                 "your-domain.com",
 		"auth_token":                  "change-me-strong-token",
 		"reject_unauthorized":         true,

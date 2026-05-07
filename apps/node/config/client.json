@@ -4,7 +4,7 @@
   "upstream": {
     "host": "206.119.179.201",
     "port": 6666,
-    "path": "/proxy-v2",
+    "path": "/proxy",
     "serverName": "zyko2.online",
     "authToken": "change-me-strong-token",
     "rejectUnauthorized": true

@@ -4,15 +4,15 @@ Go 版本客户端用于连接 Node `server`，并提供跨平台系统代理开
 
 协议兼容：
 - 上游协议：`TLS + HTTP/2`
-- 请求路径：`POST /proxy-v2`（默认）或 `POST /proxy`
+- 请求路径：`POST /proxy`（默认）或 `POST /proxy-v2`
 - 关键请求头：
   - `proxy-v2`：`x-auth-token`、`x-4px-v2`、`x-4px-v2-mode: mux`
   - `proxy`：`x-auth-token`、`x-target(base64url(host:port))`
 
 ## 核心特性
 
-- 高性能默认：默认 `upstream_path=/proxy-v2`，走 mux 多路复用。
-- 显式回退：配置改为 `upstream_path=/proxy` 即可切回经典模式。
+- 稳定优先默认：默认 `upstream_path=/proxy`，链路更直接、低抖动。
+- 可选高吞吐：需要时可改为 `upstream_path=/proxy-v2` 使用 mux 多路复用。
 - 架构复用：CLI 与 GUI 共享 `pkg/clientcore`，避免双实现漂移。
 - 跨平台代理：统一封装系统代理启停与状态查询（macOS/Windows/Linux）。
 
@@ -85,7 +85,7 @@ go run ./cmd/4px -c config/client.json sysproxy-status
 - `socks_listen`：本地 SOCKS5 监听地址
 - `http_listen`：本地 HTTP 代理监听地址
 - `upstream_host` / `upstream_port`：远端 server 地址
-- `upstream_path`：`/proxy-v2`（高性能）或 `/proxy`（兼容回退）
+- `upstream_path`：`/proxy`（默认、稳定优先）或 `/proxy-v2`（可选高吞吐）
 - `server_name`：TLS `ServerName`（SNI/证书校验）
 - `auth_token`：鉴权 token
 - `reject_unauthorized`：是否严格校验证书
@@ -97,9 +97,9 @@ go run ./cmd/4px -c config/client.json sysproxy-status
 
 ## 模式说明
 
-- `proxy-v2`（默认）：
+- `proxy-v2`（可选）：
   - 单主通道 mux 承载多路目标连接，吞吐与并发效率更高。
-- `proxy`：
+- `proxy`（默认）：
   - 每个目标连接对应独立上游 stream，链路更直观，便于最小化排障。
 
 注意：
