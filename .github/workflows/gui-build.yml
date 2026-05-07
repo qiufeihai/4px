@@ -69,7 +69,9 @@ jobs:
           APP_PATH="$(find apps/go/gui/build/bin -maxdepth 1 -name "*.app" -type d | head -n 1)"
           test -n "$APP_PATH"
           ARTIFACT="4px-client_${VERSION}_darwin_${ARCH}_${GITSHA}"
-          echo "ARTIFACT_PATH=$APP_PATH" >> "$GITHUB_ENV"
+          # Upload parent bin dir (instead of .app dir itself) so extracted artifact
+          # keeps the *.app bundle folder and can be launched directly.
+          echo "ARTIFACT_PATH=apps/go/gui/build/bin" >> "$GITHUB_ENV"
           echo "ARTIFACT_NAME=$ARTIFACT" >> "$GITHUB_ENV"
 
       - name: Prepare artifact metadata (Windows)
