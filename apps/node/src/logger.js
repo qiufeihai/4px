@@ -25,6 +25,9 @@ function normalizeLevel(level) {
 function createLogger(moduleName, configuredLevel) {
   const currentLevel = normalizeLevel(process.env.LOG_LEVEL || configuredLevel || 'INFO');
   const currentPriority = LEVEL_PRIORITY[currentLevel];
+  function enabled(level) {
+    return LEVEL_PRIORITY[normalizeLevel(level)] >= currentPriority;
+  }
 
   function output(level, message, extra) {
     if (LEVEL_PRIORITY[level] < currentPriority) return;
@@ -42,6 +45,7 @@ function createLogger(moduleName, configuredLevel) {
     info: (message, extra) => output('INFO', message, extra),
     warn: (message, extra) => output('WARN', message, extra),
     error: (message, extra) => output('ERROR', message, extra),
+    enabled,
     level: currentLevel
   };
 }

@@ -21,6 +21,7 @@ const metricsIntervalMs = cfg.metricsIntervalMs || 30000;
 const listenBacklog = cfg.listenBacklog || 4096;
 const establishWarnThresholdMs = Math.max(200, Number(cfg.establishWarnThresholdMs || 1500));
 const establishWarnMinIntervalMs = Math.max(200, Number(cfg.establishWarnMinIntervalMs || 5000));
+const slowEstablishTopN = Math.max(1, Math.floor(Number(cfg.slowEstablishTopN || 5)));
 const videoFirstByteTimeoutMs = Math.max(0, Number(cfg.videoFirstByteTimeoutMs || 0));
 const videoFirstByteTimeoutDomains = (() => {
   const raw = cfg.videoFirstByteTimeoutDomains;
@@ -55,6 +56,7 @@ const userStore = new UserStore({
 const userRuntime = new Map();
 const userDeviceLeases = new Map();
 const slowEstablishLastWarnAt = new Map();
+const slowEstablishSummary = new Map();
 
 function shouldEmitSlowWarn(kind, host, port) {
   const key = `${kind}|${String(host || '').toLowerCase()}:${Number(port || 0)}`;
@@ -68,6 +70,31 @@ function shouldEmitSlowWarn(kind, host, port) {
     slowEstablishLastWarnAt.clear();
   }
   return true;
+}
+
+function recordSlowEstablish(kind, host, port, ttfbMs, connectMs) {
+  const h = String(host || '').toLowerCase();
+  const p = Number(port || 0);
+  const key = `${kind}|${h}:${p}`;
+  const current = slowEstablishSummary.get(key) || {
+    kind,
+    host: h,
+    port: p,
+    count: 0,
+    ttfbMaxMs: 0,
+    connectMaxMs: 0
+  };
+  current.count += 1;
+  if (Number.isFinite(Number(ttfbMs)) && Number(ttfbMs) > current.ttfbMaxMs) {
+    current.ttfbMaxMs = Number(ttfbMs);
+  }
+  if (Number.isFinite(Number(connectMs)) && Number(connectMs) > current.connectMaxMs) {
+    current.connectMaxMs = Number(connectMs);
+  }
+  slowEstablishSummary.set(key, current);
+  if (slowEstablishSummary.size > 4096) {
+    slowEstablishSummary.clear();
+  }
 }
 
 function hostMatchesDomain(host, domain) {
@@ -107,6 +134,21 @@ setInterval(() => {
     `metrics stream_total=${stats.streamTotal} active_streams=${stats.activeStreams} route_reject=${stats.routeRejectedTotal} auth_reject=${stats.authRejectedTotal} target_parse_fail=${stats.targetParseFailTotal} remote_ok=${stats.remoteConnectSuccessTotal} remote_error=${stats.remoteConnectErrorTotal} remote_connect_timeout=${stats.remoteConnectTimeoutTotal} remote_idle_timeout=${stats.remoteIdleTimeoutTotal} video_first_byte_timeout=${stats.videoFirstByteTimeoutTotal} buffer_overflow=${stats.bufferOverflowTotal} retryable_err=${stats.retryableErrorTotal} non_retryable_err=${stats.nonRetryableErrorTotal} eventloop_p95_ms=${(loopDelay.percentile(95) / 1e6).toFixed(2)}`
   );
   loopDelay.reset();
+}, metricsIntervalMs).unref();
+
+setInterval(() => {
+  if (slowEstablishSummary.size === 0) return;
+  const items = Array.from(slowEstablishSummary.values())
+    .sort((a, b) => {
+      if (b.ttfbMaxMs !== a.ttfbMaxMs) return b.ttfbMaxMs - a.ttfbMaxMs;
+      return b.count - a.count;
+    })
+    .slice(0, slowEstablishTopN);
+  const summaryText = items
+    .map((v) => `${v.kind}:${v.host}:${v.port}#${v.count}(ttfb_max=${v.ttfbMaxMs},connect_max=${v.connectMaxMs})`)
+    .join(', ');
+  logger.warn(`slow establish summary top=${items.length}/${slowEstablishSummary.size}, ${summaryText}`);
+  slowEstablishSummary.clear();
 }, metricsIntervalMs).unref();
 
 function classifyServerError(err, fallback = 'retryable') {
@@ -434,7 +476,9 @@ server.on('stream', (stream, headers) => {
       }
     };
     markUserConnectionOpen(authUser);
-    logger.info(`stream accepted, trace_id=${traceId}, peer=${remotePeer}, stream=${streamId}, user=${authUser.username}, target=${host}:${port}`);
+    if (logger.enabled('INFO')) {
+      logger.info(`stream accepted, trace_id=${traceId}, peer=${remotePeer}, stream=${streamId}, user=${authUser.username}, target=${host}:${port}`);
+    }
     const remote = net.createConnection({ host, port });
     remote.setNoDelay(true);
     remote.setKeepAlive(true, remoteKeepAliveInitialDelayMs);
@@ -452,8 +496,13 @@ server.on('stream', (stream, headers) => {
       responded = true;
       remoteConnectedAtMs = Date.now();
       stats.remoteConnectSuccessTotal += 1;
-      logger.info(`remote connected, trace_id=${traceId}, stream=${streamId}, target=${host}:${port}`);
+      if (logger.enabled('INFO')) {
+        logger.info(`remote connected, trace_id=${traceId}, stream=${streamId}, target=${host}:${port}`);
+      }
       const connectMs = remoteConnectedAtMs - acceptedAtMs;
+      if (connectMs >= establishWarnThresholdMs) {
+        recordSlowEstablish('connect', host, port, 0, connectMs);
+      }
       if (!establishWarnLogged && connectMs >= establishWarnThresholdMs && shouldEmitSlowWarn('connect', host, port)) {
         establishWarnLogged = true;
         logger.warn(
@@ -508,6 +557,9 @@ server.on('stream', (stream, headers) => {
         clearFirstByteTimeout();
         const ttfbMs = firstRemoteDataAtMs - acceptedAtMs;
         const connectMs = remoteConnectedAtMs > 0 ? remoteConnectedAtMs - acceptedAtMs : -1;
+        if (ttfbMs >= establishWarnThresholdMs) {
+          recordSlowEstablish('first_byte', host, port, ttfbMs, connectMs);
+        }
         if (!establishWarnLogged && ttfbMs >= establishWarnThresholdMs && shouldEmitSlowWarn('first_byte', host, port)) {
           establishWarnLogged = true;
           logger.warn(
@@ -557,7 +609,9 @@ server.on('stream', (stream, headers) => {
       if (!remote.destroyed) remote.destroy();
     });
     remote.on('close', () => {
-      logger.info(`remote closed, trace_id=${traceId}, stream=${streamId}, target=${host}:${port}`);
+      if (logger.enabled('INFO')) {
+        logger.info(`remote closed, trace_id=${traceId}, stream=${streamId}, target=${host}:${port}`);
+      }
       if (!stream.destroyed) stream.end();
     });
   } catch (e) {
