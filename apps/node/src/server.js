@@ -1,6 +1,5 @@
 const fs = require('fs');
 const net = require('net');
-const dns = require('dns');
 const path = require('path');
 const http2 = require('http2');
 const { monitorEventLoopDelay } = require('perf_hooks');
@@ -16,9 +15,6 @@ const logger = createLogger('server', cfg.logLevel);
 const remoteConnectTimeoutMs = cfg.remoteConnectTimeoutMs || cfg.connectTimeoutMs || 10000;
 const remoteIdleTimeoutMs = Number.isFinite(Number(cfg.remoteIdleTimeoutMs)) ? Number(cfg.remoteIdleTimeoutMs) : 300000;
 const remoteKeepAliveInitialDelayMs = cfg.remoteKeepAliveInitialDelayMs || 30000;
-const remotePreferIPv4 = cfg.remotePreferIPv4 !== false;
-const remoteAutoSelectFamily = cfg.remoteAutoSelectFamily !== false;
-const remoteAutoSelectFamilyAttemptTimeoutMs = Math.max(50, Number(cfg.remoteAutoSelectFamilyAttemptTimeoutMs || 200));
 const streamIdleTimeoutMs = Number.isFinite(Number(cfg.streamIdleTimeoutMs)) ? Number(cfg.streamIdleTimeoutMs) : 300000;
 const maxBufferedBytes = cfg.maxBufferedBytes || 4 * 1024 * 1024;
 const metricsIntervalMs = cfg.metricsIntervalMs || 30000;
@@ -44,15 +40,6 @@ const userStore = new UserStore({
   reloadIntervalMs: cfg.authUsersReloadIntervalMs || 5000,
   defaultMaxDevices
 });
-
-if (remotePreferIPv4) {
-  try {
-    dns.setDefaultResultOrder('ipv4first');
-  } catch (err) {
-    logger.warn(`set dns default result order failed: ${err.message}`);
-  }
-}
-
 const userRuntime = new Map();
 const userDeviceLeases = new Map();
 
@@ -390,12 +377,7 @@ server.on('stream', (stream, headers) => {
     const { host, port } = parseTarget(headers);
     markUserConnectionOpen(authUser);
     logger.info(`stream accepted, peer=${remotePeer}, stream=${streamId}, user=${authUser.username}, target=${host}:${port}`);
-    const remoteConnectOptions = { host, port };
-    if (remoteAutoSelectFamily) {
-      remoteConnectOptions.autoSelectFamily = true;
-      remoteConnectOptions.autoSelectFamilyAttemptTimeout = remoteAutoSelectFamilyAttemptTimeoutMs;
-    }
-    const remote = net.createConnection(remoteConnectOptions);
+    const remote = net.createConnection({ host, port });
     remote.setNoDelay(true);
     remote.setKeepAlive(true, remoteKeepAliveInitialDelayMs);
 
@@ -503,7 +485,6 @@ server.listen(cfg.listenPort, cfg.listenHost, listenBacklog, () => {
   logger.info(`H2 server listening on ${cfg.listenHost}:${cfg.listenPort}`);
   logger.info(`log level=${logger.level}`);
   logger.info(`listen backlog=${listenBacklog}`);
-  logger.info(`remote connect policy prefer_ipv4=${remotePreferIPv4} auto_select_family=${remoteAutoSelectFamily} attempt_timeout_ms=${remoteAutoSelectFamilyAttemptTimeoutMs}`);
   logger.info(
     `h2 settings header_table_size=${h2HeaderTableSize} initial_window_size=${h2InitialWindowSize} max_concurrent_streams=${h2MaxConcurrentStreams} max_frame_size=${h2MaxFrameSize} max_header_list_size=${h2MaxHeaderListSize}`
   );

@@ -25,9 +25,6 @@
   "metricsIntervalMs": 30000,
   "listenBacklog": 4096,
   "remoteConnectTimeoutMs": 15000,
-  "remotePreferIPv4": true,
-  "remoteAutoSelectFamily": true,
-  "remoteAutoSelectFamilyAttemptTimeoutMs": 200,
   "remoteIdleTimeoutMs": 300000,
   "remoteKeepAliveInitialDelayMs": 30000,
   "streamIdleTimeoutMs": 300000

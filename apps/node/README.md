@@ -103,9 +103,6 @@ node bin/4px.js client -c config/client.json
 - `maxBufferedBytes`：单连接写缓冲上限
 - `metricsIntervalMs`：指标日志输出周期
 - `remoteConnectTimeoutMs`：到目标地址连接超时
-- `remotePreferIPv4`：DNS 结果优先 IPv4（默认 `true`，用于降低 IPv6 回退等待）
-- `remoteAutoSelectFamily`：启用地址族自动选择（默认 `true`）
-- `remoteAutoSelectFamilyAttemptTimeoutMs`：自动选择时每次尝试超时（默认 `200ms`）
 - `remoteIdleTimeoutMs`：目标连接空闲超时（`0` 表示关闭）
 - `streamIdleTimeoutMs`：H2 stream 空闲超时（`0` 表示关闭）
 

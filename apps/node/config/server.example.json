@@ -43,9 +43,6 @@
   "h2MaxHeaderListSize": 65536,
   "h2EnableConnectProtocol": false,
   "remoteConnectTimeoutMs": 15000,
-  "remotePreferIPv4": true,
-  "remoteAutoSelectFamily": true,
-  "remoteAutoSelectFamilyAttemptTimeoutMs": 200,
   "remoteIdleTimeoutMs": 300000,
   "remoteKeepAliveInitialDelayMs": 30000,
   "streamIdleTimeoutMs": 300000
