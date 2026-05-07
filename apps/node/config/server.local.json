@@ -25,7 +25,7 @@
   "metricsIntervalMs": 30000,
   "establishWarnThresholdMs": 1500,
   "establishWarnMinIntervalMs": 5000,
-  "videoFirstByteTimeoutMs": 3000,
+  "videoFirstByteTimeoutMs": 5000,
   "videoConnectTimeoutMs": 5000,
   "videoFirstByteTimeoutDomains": [
     "googlevideo.com"
