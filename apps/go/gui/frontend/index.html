@@ -241,8 +241,6 @@
         <div class="status-item" id="statusStarted">started: -</div>
         <div class="status-item" id="statusExited">exited: -</div>
         <div class="status-item" id="statusProxy">system proxy: -</div>
-        <div class="status-item" id="statusMuxConnected">mux connected: -</div>
-        <div class="status-item" id="statusMuxReconnect">mux reconnect: -</div>
       </div>
       <div class="row" style="margin-bottom: 8px;">
         <button id="btnRefreshStatus" class="secondary">刷新状态</button>
@@ -278,8 +276,6 @@
       started: document.getElementById("statusStarted"),
       exited: document.getElementById("statusExited"),
       proxy: document.getElementById("statusProxy"),
-      muxConnected: document.getElementById("statusMuxConnected"),
-      muxReconnect: document.getElementById("statusMuxReconnect"),
       statusSummary: document.getElementById("statusSummary")
     };
     let proxyState = "unknown";
@@ -542,20 +538,13 @@
         ui.config.textContent = "config: " + (s.configPath || "-");
         ui.started.textContent = "started: " + (s.lastStartedAt || "-");
         ui.exited.textContent = "exited: " + (s.lastExitedAt || "-");
-        ui.muxConnected.textContent = "mux connected: " + (s.muxConnected ? "yes" : "no");
-        ui.muxReconnect.textContent = "mux reconnect: " + String(s.muxReconnectTotal || 0) + (s.muxLastReconnectErr ? " | last error: " + s.muxLastReconnectErr : "");
         ui.statusSummary.textContent =
           "summary: running=" + (s.running ? "yes" : "no") +
           " | system_proxy=" + proxyStateLabel(proxyState) +
-          " | mux_connected=" + (s.muxConnected ? "yes" : "no") +
-          " | mux_reconnect=" + String(s.muxReconnectTotal || 0) +
-          (s.muxLastReconnectErr ? " | mux_last_error=" + s.muxLastReconnectErr : "") +
           (s.lastError ? " | client_last_error=" + s.lastError : "");
-        if (s.lastError || s.muxLastReconnectErr) {
+        if (s.lastError) {
           setSummaryTone("err");
-        } else if (s.running && !s.muxConnected) {
-          setSummaryTone("warn");
-        } else if (s.running && s.muxConnected) {
+        } else if (s.running) {
           setSummaryTone("ok");
         } else {
           setSummaryTone("");

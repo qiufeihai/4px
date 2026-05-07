@@ -23,9 +23,6 @@ type ClientStatus struct {
 	LastStartedAt       string `json:"lastStartedAt"`
 	LastExitedAt        string `json:"lastExitedAt"`
 	LastError           string `json:"lastError"`
-	MuxConnected        bool   `json:"muxConnected"`
-	MuxReconnectTotal   uint64 `json:"muxReconnectTotal"`
-	MuxLastReconnectErr string `json:"muxLastReconnectErr"`
 }
 
 type App struct {
@@ -215,10 +212,6 @@ func (a *App) GetClientStatus() ClientStatus {
 		ConfigPath: a.lastConfigPath,
 		LastError:  a.lastError,
 	}
-	muxStats := clientcore.GetMuxRuntimeStats()
-	status.MuxConnected = muxStats.Connected
-	status.MuxReconnectTotal = muxStats.ReconnectTotal
-	status.MuxLastReconnectErr = muxStats.LastReconnectErr
 	status.PID = os.Getpid()
 	if !a.lastStartedAt.IsZero() {
 		status.LastStartedAt = a.lastStartedAt.Format(time.RFC3339)
