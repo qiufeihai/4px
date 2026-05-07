@@ -21,13 +21,16 @@ const metricsIntervalMs = cfg.metricsIntervalMs || 30000;
 const listenBacklog = cfg.listenBacklog || 4096;
 const establishWarnThresholdMs = Math.max(200, Number(cfg.establishWarnThresholdMs || 1500));
 const establishWarnMinIntervalMs = Math.max(200, Number(cfg.establishWarnMinIntervalMs || 5000));
+const slowEstablishEnabled = cfg.slowEstablishEnabled === true;
 const slowEstablishTopN = Math.max(1, Math.floor(Number(cfg.slowEstablishTopN || 5)));
+const remoteErrorLogMinIntervalMs = Math.max(0, Number(cfg.remoteErrorLogMinIntervalMs || 3000));
 const h2HeaderTableSize = Number(cfg.h2HeaderTableSize || 4096);
 const h2InitialWindowSize = Number(cfg.h2InitialWindowSize || 1024 * 1024);
 const h2MaxConcurrentStreams = Number(cfg.h2MaxConcurrentStreams || 1024);
 const h2MaxFrameSize = Number(cfg.h2MaxFrameSize || 64 * 1024);
 const h2MaxHeaderListSize = Number(cfg.h2MaxHeaderListSize || 64 * 1024);
 const h2EnableConnectProtocol = cfg.h2EnableConnectProtocol === true;
+const userRuntimeTrackingEnabled = cfg.userRuntimeTrackingEnabled === true;
 const userActivityUpdateIntervalMs = Math.max(1000, Number(cfg.userActivityUpdateIntervalMs || 60000));
 const defaultMaxDevices = Math.max(1, Math.floor(Number(cfg.defaultMaxDevices || 1)));
 const deviceLeaseTtlMs = Math.max(5000, Math.floor(Number(cfg.deviceLeaseTtlMs || 90000)));
@@ -47,8 +50,10 @@ const userRuntime = new Map();
 const userDeviceLeases = new Map();
 const slowEstablishLastWarnAt = new Map();
 const slowEstablishSummary = new Map();
+const remoteErrorLastLogAt = new Map();
 
 function shouldEmitSlowWarn(kind, host, port) {
+  if (!slowEstablishEnabled) return false;
   const key = `${kind}|${String(host || '').toLowerCase()}:${Number(port || 0)}`;
   const now = Date.now();
   const last = Number(slowEstablishLastWarnAt.get(key) || 0);
@@ -63,6 +68,7 @@ function shouldEmitSlowWarn(kind, host, port) {
 }
 
 function recordSlowEstablish(kind, host, port, ttfbMs, connectMs) {
+  if (!slowEstablishEnabled) return;
   const h = String(host || '').toLowerCase();
   const p = Number(port || 0);
   const key = `${kind}|${h}:${p}`;
@@ -85,6 +91,21 @@ function recordSlowEstablish(kind, host, port, ttfbMs, connectMs) {
   if (slowEstablishSummary.size > 4096) {
     slowEstablishSummary.clear();
   }
+}
+
+function shouldEmitRemoteErrorLog(host, port) {
+  if (remoteErrorLogMinIntervalMs <= 0) return true;
+  const key = `${String(host || '').toLowerCase()}:${Number(port || 0)}`;
+  const now = Date.now();
+  const last = Number(remoteErrorLastLogAt.get(key) || 0);
+  if (now - last < remoteErrorLogMinIntervalMs) {
+    return false;
+  }
+  remoteErrorLastLogAt.set(key, now);
+  if (remoteErrorLastLogAt.size > 2048) {
+    remoteErrorLastLogAt.clear();
+  }
+  return true;
 }
 
 const stats = {
@@ -112,6 +133,7 @@ setInterval(() => {
 }, metricsIntervalMs).unref();
 
 setInterval(() => {
+  if (!slowEstablishEnabled) return;
   if (slowEstablishSummary.size === 0) return;
   const items = Array.from(slowEstablishSummary.values())
     .sort((a, b) => {
@@ -250,6 +272,7 @@ function releaseDeviceLease(authUser, clientId) {
 }
 
 function markUserSeen(authUser) {
+  if (!userRuntimeTrackingEnabled) return;
   const record = getUserRuntimeRecord(authUser);
   record.lastSeenAtMs = Date.now();
   pruneUserDeviceLeases(record.userId, record.lastSeenAtMs);
@@ -257,6 +280,7 @@ function markUserSeen(authUser) {
 }
 
 function markUserConnectionOpen(authUser) {
+  if (!userRuntimeTrackingEnabled) return;
   const record = getUserRuntimeRecord(authUser);
   record.activeConnections += 1;
   const now = Date.now();
@@ -264,21 +288,24 @@ function markUserConnectionOpen(authUser) {
   record.lastActiveAtMs = now;
 }
 
-function markUserConnectionActive(authUser) {
+function markUserConnectionActive(authUser, nowMs) {
+  if (!userRuntimeTrackingEnabled) return;
   const record = getUserRuntimeRecord(authUser);
-  const now = Date.now();
+  const now = Number.isFinite(Number(nowMs)) ? Number(nowMs) : Date.now();
   if (!record.lastActiveAtMs || now - record.lastActiveAtMs >= userActivityUpdateIntervalMs) {
     record.lastActiveAtMs = now;
   }
 }
 
 function markUserConnectionClose(authUser) {
+  if (!userRuntimeTrackingEnabled) return;
   const record = getUserRuntimeRecord(authUser);
   if (record.activeConnections > 0) record.activeConnections -= 1;
   record.lastActiveAtMs = Date.now();
 }
 
 function getUserRuntimeStats() {
+  if (!userRuntimeTrackingEnabled) return {};
   const now = Date.now();
   userDeviceLeases.forEach((_, userId) => pruneUserDeviceLeases(userId, now));
   const out = {};
@@ -442,6 +469,14 @@ server.on('stream', (stream, headers) => {
     leaseAcquired = true;
     markUserSeen(authUser);
     const { host, port } = parseTarget(headers);
+    let nextUserActiveUpdateAtMs = 0;
+    const markActiveFast = () => {
+      if (!userRuntimeTrackingEnabled) return;
+      const now = Date.now();
+      if (now < nextUserActiveUpdateAtMs) return;
+      nextUserActiveUpdateAtMs = now + userActivityUpdateIntervalMs;
+      markUserConnectionActive(authUser, now);
+    };
     markUserConnectionOpen(authUser);
     if (logger.enabled('INFO')) {
       logger.info(`stream accepted, trace_id=${traceId}, peer=${remotePeer}, stream=${streamId}, user=${authUser.username}, target=${host}:${port}`);
@@ -495,7 +530,7 @@ server.on('stream', (stream, headers) => {
     }
 
     stream.on('data', (chunk) => {
-      markUserConnectionActive(authUser);
+      markActiveFast();
       const ok = remote.write(chunk);
       if (!ok) stream.pause();
       if (remote.writableLength > maxBufferedBytes) {
@@ -521,7 +556,7 @@ server.on('stream', (stream, headers) => {
           );
         }
       }
-      markUserConnectionActive(authUser);
+      markActiveFast();
       const ok = stream.write(chunk);
       if (!ok) remote.pause();
       if (stream.writableLength > maxBufferedBytes) {
@@ -548,7 +583,9 @@ server.on('stream', (stream, headers) => {
     remote.on('error', () => {
       stats.remoteConnectErrorTotal += 1;
       markServerError('retryable');
-      logger.error(`remote connection error, trace_id=${traceId}, stream=${streamId}, target=${host}:${port}, mode=${reqPath}, err_class=retryable`);
+      if (shouldEmitRemoteErrorLog(host, port)) {
+        logger.error(`remote connection error, trace_id=${traceId}, stream=${streamId}, target=${host}:${port}, mode=${reqPath}, err_class=retryable`);
+      }
       if (!responded && !stream.destroyed) {
         stream.respond({ ':status': 502 });
         stream.end();
@@ -587,6 +624,9 @@ server.listen(cfg.listenPort, cfg.listenHost, listenBacklog, () => {
     `h2 settings header_table_size=${h2HeaderTableSize} initial_window_size=${h2InitialWindowSize} max_concurrent_streams=${h2MaxConcurrentStreams} max_frame_size=${h2MaxFrameSize} max_header_list_size=${h2MaxHeaderListSize}`
   );
   logger.info('proxy routes v1=/proxy');
+  logger.info(`user runtime tracking enabled=${userRuntimeTrackingEnabled}`);
+  logger.info(`slow establish enabled=${slowEstablishEnabled} threshold_ms=${establishWarnThresholdMs} min_interval_ms=${establishWarnMinIntervalMs} top_n=${slowEstablishTopN}`);
+  logger.info(`remote error log min interval ms=${remoteErrorLogMinIntervalMs}`);
   logger.info(`device limit default_max_devices=${defaultMaxDevices} lease_ttl_ms=${deviceLeaseTtlMs} policy=${deviceLimitPolicy}`);
   if (userStore.enabled) {
     logger.info(`multi-user auth enabled, users_file=${usersFilePath}`);

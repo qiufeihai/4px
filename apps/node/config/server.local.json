@@ -10,6 +10,7 @@
   ],
   "authUsersFile": "server.users.json",
   "authUsersReloadIntervalMs": 5000,
+  "userRuntimeTrackingEnabled": false,
   "userActivityUpdateIntervalMs": 60000,
   "defaultMaxDevices": 1,
   "deviceLeaseTtlMs": 90000,
@@ -18,16 +19,36 @@
     "enabled": true,
     "listenHost": "0.0.0.0",
     "listenPort": 6688,
-    "token": "change-me-admin-token"
+    "token": "change-me-admin-token",
+    "serviceControl": {
+      "enabled": false,
+      "systemdService": "4px",
+      "useSudo": true
+    },
+    "clientConfigExport": {
+      "upstreamHost": "your-server-ip",
+      "upstreamPort": 6666,
+      "serverName": "your-server-domain",
+      "rejectUnauthorized": true,
+      "caFile": ""
+    }
   },
   "logLevel": "WARN",
   "maxBufferedBytes": 4194304,
   "metricsIntervalMs": 30000,
+  "slowEstablishEnabled": false,
   "establishWarnThresholdMs": 1500,
   "establishWarnMinIntervalMs": 5000,
   "listenBacklog": 4096,
+  "h2HeaderTableSize": 4096,
+  "h2InitialWindowSize": 1048576,
+  "h2MaxConcurrentStreams": 1024,
+  "h2MaxFrameSize": 65536,
+  "h2MaxHeaderListSize": 65536,
+  "h2EnableConnectProtocol": false,
   "remoteConnectTimeoutMs": 15000,
   "remoteIdleTimeoutMs": 300000,
   "remoteKeepAliveInitialDelayMs": 30000,
-  "streamIdleTimeoutMs": 300000
+  "streamIdleTimeoutMs": 300000,
+  "remoteErrorLogMinIntervalMs": 3000
 }

@@ -94,18 +94,24 @@ node bin/4px.js client -c config/client.json
 - `authTokens`：静态鉴权 token 列表（可与多用户并行生效）
 - `authUsersFile`：多用户文件路径（启用后按用户 `authToken` 鉴权）
 - `authUsersReloadIntervalMs`：用户文件热加载间隔
+- `userRuntimeTrackingEnabled`：是否启用用户在线态运行时统计（默认 `false`；开启可在管理页查看在线/活跃状态）
 - `userActivityUpdateIntervalMs`：用户“最近活跃”时间的采样更新间隔（毫秒，默认 `60000`）
 - `admin.enabled` / `admin.listenHost` / `admin.listenPort` / `admin.token`：Web 管理端配置
 - `admin.serviceControl.enabled` / `admin.serviceControl.systemdService` / `admin.serviceControl.useSudo`：Web 触发 systemd 重启配置
-- `admin.clientConfigExport.*`：用户 client 配置导出默认值（`upstreamHost/upstreamPort/serverName/rejectUnauthorized/caFile/templateFile`）
+- `admin.clientConfigExport.*`：用户 client 配置导出默认值（`upstreamHost/upstreamPort/serverName/rejectUnauthorized/caFile`）
 - `logLevel`：日志等级（`DEBUG/INFO/WARN/ERROR`）
 - `listenBacklog`：监听 backlog
 - `maxBufferedBytes`：单连接写缓冲上限
 - `metricsIntervalMs`：指标日志输出周期
+- `slowEstablishEnabled`：是否启用 `slow establish` 慢链路日志收集（默认 `false`；开启后输出慢日志与 summary）
+- `slowEstablishTopN`：慢链路 summary 输出条数上限（默认 `5`）
 - `establishWarnThresholdMs`：建链慢日志阈值（毫秒，默认 `1500`，超过会打印 `slow establish` 警告）
 - `establishWarnMinIntervalMs`：同目标慢建链日志最小间隔（毫秒，默认 `5000`，用于限频降噪）
+- `remoteErrorLogMinIntervalMs`：`remote connection error` 同目标日志最小输出间隔（毫秒，默认 `3000`；`0` 表示不限制）
+- `h2HeaderTableSize` / `h2InitialWindowSize` / `h2MaxConcurrentStreams` / `h2MaxFrameSize` / `h2MaxHeaderListSize` / `h2EnableConnectProtocol`：HTTP/2 连接参数（默认值见配置文件，通常保持默认）
 - `remoteConnectTimeoutMs`：到目标地址连接超时
 - `remoteIdleTimeoutMs`：目标连接空闲超时（`0` 表示关闭）
+- `remoteKeepAliveInitialDelayMs`：目标连接 KeepAlive 初始延迟
 - `streamIdleTimeoutMs`：H2 stream 空闲超时（`0` 表示关闭）
 
 ### `client.json`
@@ -160,6 +166,7 @@ LOG_LEVEL=WARN node bin/4px.js client -c config/client.json
   - `connect_ms` 低但 `ttfb_ms` 高：优先排查目标站/CDN 首包链路。
 - 服务端日志已支持 `trace_id`，可与 Go 客户端日志对齐分析同一请求。
 - `establishWarnMinIntervalMs` 用于慢日志限频，降低日志风暴对事件循环的影响。
+- 若你需要排查慢链路，可临时设置 `slowEstablishEnabled=true` 打开慢日志收集，问题定位后再关闭。
 
 鉴权失败排查：
 
