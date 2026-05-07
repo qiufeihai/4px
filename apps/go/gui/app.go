@@ -143,12 +143,18 @@ func (a *App) StartClient(configPath string) error {
 	a.lastStartedAt = time.Now()
 	a.lastError = ""
 	a.pushLogLineLocked(fmt.Sprintf("[%s] client started with config: %s", a.lastStartedAt.Format(time.RFC3339), cfgPath))
+	clientcore.SetLogSink(func(line string) {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		a.pushLogLineLocked(line)
+	})
 	a.mu.Unlock()
 
 	go func() {
 		waitErr := clientcore.RunProxyWithContext(runCtx, cfg)
 		a.mu.Lock()
 		defer a.mu.Unlock()
+		clientcore.SetLogSink(nil)
 		a.clientCancel = nil
 		a.lastExitedAt = time.Now()
 		if waitErr != nil {

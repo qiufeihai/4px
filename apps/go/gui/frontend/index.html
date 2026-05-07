@@ -102,6 +102,13 @@
     button:hover { background: var(--btn-hover); }
     button.secondary { background: #4b5563; }
     button.danger { background: #b91c1c; }
+    button.unsaved {
+      background: #b45309;
+      box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.25);
+    }
+    button.unsaved:hover {
+      background: #92400e;
+    }
     .status-row {
       display: grid;
       grid-template-columns: 1fr 1fr;
@@ -268,6 +275,7 @@
       message: document.getElementById("message"),
       logs: document.getElementById("logs"),
       stopAutoDisableProxy: document.getElementById("stopAutoDisableProxy"),
+      saveBtn: document.getElementById("btnSave"),
       startBtn: document.getElementById("btnStart"),
       stopBtn: document.getElementById("btnStop"),
       running: document.getElementById("statusRunning"),
@@ -279,6 +287,10 @@
       statusSummary: document.getElementById("statusSummary")
     };
     let proxyState = "unknown";
+    let authIssueHint = "";
+    let lastAuthIssueToastAt = 0;
+    let hasUnsavedConfig = false;
+    let lastSavedConfigSnapshot = "";
 
     function api() {
       return window.go && window.go.main && window.go.main.App ? window.go.main.App : null;
@@ -287,6 +299,25 @@
     function showMessage(text, isError) {
       ui.message.textContent = text || "";
       ui.message.className = "msg " + (isError ? "err" : "ok");
+    }
+
+    function snapshotConfig(cfg) {
+      try {
+        return JSON.stringify(cfg || {});
+      } catch (err) {
+        return "";
+      }
+    }
+
+    function applyUnsavedState() {
+      if (!ui.saveBtn) return;
+      ui.saveBtn.classList.toggle("unsaved", hasUnsavedConfig);
+      ui.saveBtn.textContent = hasUnsavedConfig ? "保存配置 *" : "保存配置";
+    }
+
+    function setUnsavedConfigState(dirty) {
+      hasUnsavedConfig = !!dirty;
+      applyUnsavedState();
     }
 
     function asNumber(value, fallback) {
@@ -332,6 +363,17 @@
       fields.rawJson.value = JSON.stringify(cfg, null, 2);
     }
 
+    function trackUnsavedFromForm() {
+      let currentSnapshot = "";
+      try {
+        currentSnapshot = snapshotConfig(buildConfigForSave());
+      } catch (err) {
+        // Invalid JSON in raw editor also means unsaved edits exist.
+        currentSnapshot = "__invalid__";
+      }
+      setUnsavedConfigState(currentSnapshot !== lastSavedConfigSnapshot);
+    }
+
     async function loadConfig() {
       const backend = api();
       if (!backend) {
@@ -341,6 +383,8 @@
       try {
         const cfg = await backend.LoadConfig(getConfigPath());
         fillFormFromConfig(cfg || {});
+        lastSavedConfigSnapshot = snapshotConfig(cfg || {});
+        setUnsavedConfigState(false);
         showMessage("配置读取成功", false);
       } catch (err) {
         showMessage("读取配置失败: " + (err || ""), true);
@@ -371,6 +415,8 @@
         const cfg = buildConfigForSave();
         await backend.SaveConfig(getConfigPath(), cfg);
         fillFormFromConfig(cfg);
+        lastSavedConfigSnapshot = snapshotConfig(cfg);
+        setUnsavedConfigState(false);
         showMessage("配置保存成功", false);
       } catch (err) {
         showMessage("保存配置失败: " + (err || ""), true);
@@ -382,6 +428,13 @@
       if (!backend) {
         showMessage("Wails backend 未就绪", true);
         return;
+      }
+      if (hasUnsavedConfig) {
+        const ok = window.confirm("检测到配置有未保存修改，是否继续启动？\n建议先点击“保存配置”再启动。");
+        if (!ok) {
+          showMessage("已取消启动，请先保存配置。", true);
+          return;
+        }
       }
       try {
         await backend.StartClient(getConfigPath());
@@ -484,6 +537,27 @@
       }
     }
 
+    function extractAuthIssueHint(lines) {
+      const arr = Array.isArray(lines) ? lines : [];
+      for (let i = arr.length - 1; i >= 0; i -= 1) {
+        const line = String(arr[i] || "");
+        if (!line) continue;
+        if (/expired_user|auth_reason=expired_user|upstream status=401 auth_reason=expired_user/i.test(line)) {
+          return "账号已过期：请在管理后台延长该用户有效期，或更换为未过期 token。";
+        }
+        if (/disabled_user|auth_reason=disabled_user|upstream status=401 auth_reason=disabled_user/i.test(line)) {
+          return "账号已被禁用：请在管理后台启用该用户，或更换为可用 token。";
+        }
+        if (
+          /status=401|status=403|unauthorized|forbidden|invalid_token/i.test(line)
+          && /upstream|auth|reject/i.test(line)
+        ) {
+          return "鉴权失败：当前 auth_token 可能已失效或用户被禁用，请在管理后台确认用户状态并更新 token。";
+        }
+      }
+      return "";
+    }
+
     async function refreshProxyState(showToast) {
       const backend = api();
       if (!backend) {
@@ -541,9 +615,13 @@
         ui.statusSummary.textContent =
           "summary: running=" + (s.running ? "yes" : "no") +
           " | system_proxy=" + proxyStateLabel(proxyState) +
+          " | unsaved_config=" + (hasUnsavedConfig ? "yes" : "no") +
+          (authIssueHint ? " | auth_issue=" + authIssueHint : "") +
           (s.lastError ? " | client_last_error=" + s.lastError : "");
         if (s.lastError) {
           setSummaryTone("err");
+        } else if (authIssueHint) {
+          setSummaryTone("warn");
         } else if (s.running) {
           setSummaryTone("ok");
         } else {
@@ -565,6 +643,17 @@
         const lines = await backend.GetClientLogs(400);
         ui.logs.textContent = (lines || []).join("\n");
         ui.logs.scrollTop = ui.logs.scrollHeight;
+        const nextAuthIssueHint = extractAuthIssueHint(lines);
+        if (nextAuthIssueHint) {
+          authIssueHint = nextAuthIssueHint;
+          const now = Date.now();
+          if (now - lastAuthIssueToastAt > 12000) {
+            showMessage(authIssueHint, true);
+            lastAuthIssueToastAt = now;
+          }
+        } else {
+          authIssueHint = "";
+        }
       } catch (err) {
         showMessage("日志刷新失败: " + (err || ""), true);
       }
@@ -598,6 +687,11 @@
       document.getElementById("btnRefreshStatus").addEventListener("click", refreshStatus);
       document.getElementById("btnRefreshLogs").addEventListener("click", refreshLogs);
       document.getElementById("btnClearLogs").addEventListener("click", clearLogs);
+      Object.values(fields).forEach((el) => {
+        if (!el) return;
+        el.addEventListener("input", trackUnsavedFromForm);
+        el.addEventListener("change", trackUnsavedFromForm);
+      });
     }
 
     async function boot() {

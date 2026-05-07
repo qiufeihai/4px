@@ -84,6 +84,8 @@ var (
 		},
 	}
 	traceSeq atomic.Uint64
+	logSinkMu sync.RWMutex
+	logSink   func(string)
 )
 
 const upstreamEstablishWarnThresholdMS = 1500
@@ -821,6 +823,11 @@ func openUpstreamTunnel(ctx context.Context, rt *proxyRuntime, target string) (i
 	if resp.StatusCode != http.StatusOK {
 		_ = pw.CloseWithError(fmt.Errorf("status=%d", resp.StatusCode))
 		defer resp.Body.Close()
+		authReason := strings.TrimSpace(resp.Header.Get("x-auth-reason"))
+		if authReason != "" {
+			logf("WARN", "upstream rejected trace_id=%s target=%s status=%d auth_reason=%s elapsed_ms=%d", traceID, target, resp.StatusCode, authReason, elapsedMS)
+			return nil, nil, fmt.Errorf("upstream status=%d auth_reason=%s", resp.StatusCode, authReason)
+		}
 		logf("WARN", "upstream rejected trace_id=%s target=%s status=%d elapsed_ms=%d", traceID, target, resp.StatusCode, elapsedMS)
 		return nil, nil, fmt.Errorf("upstream status=%d", resp.StatusCode)
 	}
@@ -1166,5 +1173,20 @@ func logf(level string, format string, args ...any) {
 		return
 	}
 	msg := fmt.Sprintf(format, args...)
-	log.Printf("[go-client][%s][%s] %s", time.Now().UTC().Format(time.RFC3339), l, msg)
+	line := fmt.Sprintf("[go-client][%s][%s] %s", time.Now().UTC().Format(time.RFC3339), l, msg)
+	log.Print(line)
+	logSinkMu.RLock()
+	sink := logSink
+	logSinkMu.RUnlock()
+	if sink != nil {
+		sink(line)
+	}
+}
+
+// SetLogSink sets an optional callback to receive runtime log lines.
+// Passing nil disables sink forwarding.
+func SetLogSink(sink func(string)) {
+	logSinkMu.Lock()
+	logSink = sink
+	logSinkMu.Unlock()
 }

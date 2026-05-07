@@ -352,7 +352,10 @@ server.on('stream', (stream, headers) => {
       stats.authRejectedTotal += 1;
       markServerError('non-retryable');
       logger.warn(`reject unauthorized request, trace_id=${traceId}, peer=${remotePeer}, stream=${streamId}, path=${reqPath}, reason=${authResult.reason}, err_class=non-retryable`);
-      stream.respond({ ':status': 401 });
+      stream.respond({
+        ':status': 401,
+        'x-auth-reason': String(authResult.reason || '')
+      });
       stream.end();
       return;
     }
