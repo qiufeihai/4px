@@ -24,7 +24,6 @@
   "maxBufferedBytes": 4194304,
   "metricsIntervalMs": 30000,
   "listenBacklog": 4096,
-  "enableProxyV2": false,
   "h2HeaderTableSize": 4096,
   "h2InitialWindowSize": 1048576,
   "h2MaxConcurrentStreams": 1024,

@@ -61,8 +61,6 @@ type proxyRuntime struct {
 	upstreamURL string
 	authToken   string
 	clientID    string
-	v2Path      bool
-	mux         *muxClientRuntime
 }
 
 type MuxRuntimeStats struct {
@@ -279,10 +277,6 @@ func RunProxyWithContext(ctx context.Context, cfg *Config) error {
 		upstreamURL: fmt.Sprintf("https://%s:%d%s", cfg.UpstreamHost, cfg.UpstreamPort, cfg.UpstreamPath),
 		authToken:   cfg.AuthToken,
 		clientID:    resolveClientInstanceID(cfg),
-		v2Path:      cfg.UpstreamPath == "/proxy-v2",
-	}
-	if rt.v2Path {
-		rt.mux = newMuxClient(ctx, client, rt.upstreamURL, rt.authToken, rt.clientID)
 	}
 
 	socksLn, err := net.Listen("tcp", cfg.SocksListen)
@@ -929,10 +923,14 @@ func loadConfig(path string) (*Config, error) {
 		cfg.HTTPListen = "127.0.0.1:7788"
 	}
 	if strings.TrimSpace(cfg.UpstreamPath) == "" {
-		cfg.UpstreamPath = "/proxy-v2"
+		cfg.UpstreamPath = "/proxy"
 	}
 	if !strings.HasPrefix(cfg.UpstreamPath, "/") {
 		cfg.UpstreamPath = "/" + cfg.UpstreamPath
+	}
+	// Keep runtime behavior stable: this build is proxy-only.
+	if cfg.UpstreamPath != "/proxy" {
+		cfg.UpstreamPath = "/proxy"
 	}
 	if cfg.UpstreamConnectTimeoutMS <= 0 {
 		cfg.UpstreamConnectTimeoutMS = 15000
@@ -969,10 +967,6 @@ func runProxy(cfg *Config) error {
 		upstreamURL: fmt.Sprintf("https://%s:%d%s", cfg.UpstreamHost, cfg.UpstreamPort, cfg.UpstreamPath),
 		authToken:   cfg.AuthToken,
 		clientID:    resolveClientInstanceID(cfg),
-		v2Path:      cfg.UpstreamPath == "/proxy-v2",
-	}
-	if rt.v2Path {
-		rt.mux = newMuxClient(context.Background(), client, rt.upstreamURL, rt.authToken, rt.clientID)
 	}
 
 	socksLn, err := net.Listen("tcp", cfg.SocksListen)
@@ -1226,13 +1220,6 @@ func handleHTTPProxyConn(conn net.Conn, rt *proxyRuntime) {
 }
 
 func openUpstreamTunnel(ctx context.Context, rt *proxyRuntime, target string) (io.ReadCloser, writeCloserWithErr, error) {
-	if rt.v2Path && rt.mux != nil {
-		ms, err := rt.mux.Open(ctx, target)
-		if err != nil {
-			return nil, nil, err
-		}
-		return ms, &muxUpstreamWriter{s: ms}, nil
-	}
 	host, portStr, splitErr := net.SplitHostPort(target)
 	if splitErr != nil {
 		return nil, nil, splitErr
@@ -1248,12 +1235,7 @@ func openUpstreamTunnel(ctx context.Context, rt *proxyRuntime, target string) (i
 	req.Header.Set("x-client-instance-id", rt.clientID)
 	req.Header.Set("x-target-host", host)
 	req.Header.Set("x-target-port", portStr)
-	if rt.v2Path {
-		req.Header.Set("x-4px-v2", "1")
-	}
-	if !rt.v2Path {
-		req.Header.Set("x-target", base64.RawURLEncoding.EncodeToString([]byte(target)))
-	}
+	req.Header.Set("x-target", base64.RawURLEncoding.EncodeToString([]byte(target)))
 
 	resp, err := rt.client.Do(req)
 	if err != nil {

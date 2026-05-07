@@ -22,9 +22,9 @@ const metricsIntervalMs = cfg.metricsIntervalMs || 30000;
 const h2SessionPoolSize = Math.max(1, cfg.h2SessionPoolSize || 2);
 const socksListenBacklog = cfg.socksListenBacklog || 4096;
 const upstreamAuthToken = String((cfg.upstream && cfg.upstream.authToken) || '').trim();
-const upstreamPathRaw = String((cfg.upstream && cfg.upstream.path) || '/proxy-v2').trim();
-const upstreamPath = upstreamPathRaw.startsWith('/') ? upstreamPathRaw : `/${upstreamPathRaw}`;
-const useProxyV2Headers = upstreamPath === '/proxy-v2';
+// Keep runtime behavior stable: this build is proxy-only.
+const upstreamPath = '/proxy';
+const useProxyV2Headers = false;
 const MUX_FRAME_OPEN = 1;
 const MUX_FRAME_DATA = 2;
 const MUX_FRAME_CLOSE = 3;

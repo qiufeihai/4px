@@ -102,7 +102,6 @@ node bin/4px.js client -c config/client.json
 - `listenBacklog`：监听 backlog
 - `maxBufferedBytes`：单连接写缓冲上限
 - `metricsIntervalMs`：指标日志输出周期
-- `enableProxyV2`：是否启用 `/proxy-v2` 路由（默认 `false`）
 - `remoteConnectTimeoutMs`：到目标地址连接超时
 - `remoteIdleTimeoutMs`：目标连接空闲超时（`0` 表示关闭）
 - `streamIdleTimeoutMs`：H2 stream 空闲超时（`0` 表示关闭）
@@ -113,7 +112,7 @@ node bin/4px.js client -c config/client.json
 - `httpListen`：本地 HTTP 代理监听地址（例如 `127.0.0.1:7788`）
 - `httpListenBacklog`：HTTP 代理监听 backlog
 - `upstream.host` / `upstream.port`：远端 server 地址
-- `upstream.path`：上游路径，`/proxy`（默认、稳定优先）或 `/proxy-v2`（可选高吞吐）
+- `upstream.path`：上游路径（固定 `/proxy`）
 - `upstream.servername`：TLS SNI / 证书名称
 - `upstream.authToken`：上游鉴权 token（填某个用户 `authToken` 或命中 `authTokens` 列表的 token）
 - `upstream.caFile`：自定义 CA 文件路径（可选）
@@ -131,17 +130,10 @@ node bin/4px.js client -c config/client.json
 
 ## 模式选择
 
-- `proxy-v2`（可选）：
-  - 客户端配置：`upstream.path = "/proxy-v2"`
-  - 服务端配置：`enableProxyV2 = true`
-  - 特点：mux 主通道承载多子流，性能更高。
-- `proxy`（默认）：
+- 当前版本为 `proxy` 单一路径：
   - 客户端配置：`upstream.path = "/proxy"`
-  - 服务端无需 `enableProxyV2`。
-  - 特点：经典单流模型，协议更直接。
-
-注意：
-- 模式严格按配置生效，不做“`proxy-v2` 失败后自动回退 `proxy`”。
+  - 服务端路由：`POST /proxy`
+  - 特点：经典单流模型，时延行为更可预测，维护成本更低。
 
 ## 日志与调试
 
