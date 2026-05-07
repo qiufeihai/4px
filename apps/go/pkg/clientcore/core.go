@@ -33,33 +33,26 @@ import (
 )
 
 type Config struct {
-	SocksListen                 string `json:"socks_listen"`
-	HTTPListen                  string `json:"http_listen"`
-	UpstreamHost                string `json:"upstream_host"`
-	UpstreamPort                int    `json:"upstream_port"`
-	UpstreamPath                string `json:"upstream_path"`
-	ServerName                  string `json:"server_name"`
-	AuthToken                   string `json:"auth_token"`
-	RejectUnauthorized          bool   `json:"reject_unauthorized"`
-	CAFile                      string `json:"ca_file"`
-	UpstreamConnectTimeoutMS    int    `json:"upstream_connect_timeout_ms"`
-	ResponseHeaderTimeoutMS     int    `json:"response_header_timeout_ms"`
-	IdleTimeoutMS               int    `json:"idle_timeout_ms"`
-	LogLevel                    string `json:"log_level"`
-	UpstreamMaxIdleConns        int    `json:"upstream_max_idle_conns"`
-	UpstreamMaxIdlePerHost      int    `json:"upstream_max_idle_conns_per_host"`
-	UpstreamMaxConnsPerHost     int    `json:"upstream_max_conns_per_host"`
-	UpstreamDisableCompress     bool   `json:"upstream_disable_compression"`
-	UpstreamH2ReadIdleMS        int    `json:"upstream_h2_read_idle_timeout_ms"`
-	UpstreamH2PingTimeoutMS     int    `json:"upstream_h2_ping_timeout_ms"`
-	UpstreamTLSSessionCacheSize int    `json:"upstream_tls_session_cache_size"`
-	MuxTuningProfile            string `json:"mux_tuning_profile"`
-	MuxFlushIntervalMS          int    `json:"mux_flush_interval_ms"`
-	MuxFlushNotifyBytes         int    `json:"mux_flush_notify_bytes"`
-	MuxFlushBurstBytes          int    `json:"mux_flush_burst_bytes"`
-	MuxFlushMaxDelayMS          int    `json:"mux_flush_max_delay_ms"`
-	MuxStreamDataQueue          int    `json:"mux_stream_data_queue"`
-	ClientInstanceID            string `json:"client_instance_id"`
+	SocksListen              string `json:"socks_listen"`
+	HTTPListen               string `json:"http_listen"`
+	UpstreamHost             string `json:"upstream_host"`
+	UpstreamPort             int    `json:"upstream_port"`
+	UpstreamPath             string `json:"upstream_path"`
+	ServerName               string `json:"server_name"`
+	AuthToken                string `json:"auth_token"`
+	RejectUnauthorized       bool   `json:"reject_unauthorized"`
+	CAFile                   string `json:"ca_file"`
+	UpstreamConnectTimeoutMS int    `json:"upstream_connect_timeout_ms"`
+	ResponseHeaderTimeoutMS  int    `json:"response_header_timeout_ms"`
+	IdleTimeoutMS            int    `json:"idle_timeout_ms"`
+	LogLevel                 string `json:"log_level"`
+	UpstreamMaxIdleConns     int    `json:"upstream_max_idle_conns"`
+	UpstreamMaxIdlePerHost   int    `json:"upstream_max_idle_conns_per_host"`
+	UpstreamMaxConnsPerHost  int    `json:"upstream_max_conns_per_host"`
+	UpstreamDisableCompress  bool   `json:"upstream_disable_compression"`
+	UpstreamH2ReadIdleMS     int    `json:"upstream_h2_read_idle_timeout_ms"`
+	UpstreamH2PingTimeoutMS  int    `json:"upstream_h2_ping_timeout_ms"`
+	ClientInstanceID         string `json:"client_instance_id"`
 }
 
 type proxyRuntime struct {
@@ -73,12 +66,9 @@ type proxyRuntime struct {
 }
 
 type MuxRuntimeStats struct {
-	ReconnectTotal            uint64 `json:"reconnectTotal"`
-	ReconnectConsecutiveFails uint64 `json:"reconnectConsecutiveFails"`
-	LastReconnectErr          string `json:"lastReconnectErr"`
-	LastReconnectClass        string `json:"lastReconnectClass"`
-	LastReconnectBackoffMS    int64  `json:"lastReconnectBackoffMs"`
-	Connected                 bool   `json:"connected"`
+	ReconnectTotal   uint64 `json:"reconnectTotal"`
+	LastReconnectErr string `json:"lastReconnectErr"`
+	Connected        bool   `json:"connected"`
 }
 
 const (
@@ -87,102 +77,7 @@ const (
 	muxFrameClose      byte = 3
 	muxFrameOpenResult byte = 4
 	muxFrameOpenError  byte = 5
-
-	muxWriteBufferSize = 64 * 1024
-
-	muxReconnectBaseBackoff = 200 * time.Millisecond
-	muxReconnectMaxBackoff  = 5 * time.Second
 )
-
-const (
-	muxProfileLatency    = "latency"
-	muxProfileBalanced   = "balanced"
-	muxProfileThroughput = "throughput"
-)
-
-type muxTuning struct {
-	flushInterval    time.Duration
-	flushNotifyBytes int
-	flushBurstBytes  int
-	flushMaxDelay    time.Duration
-	streamDataQueue  int
-}
-
-func defaultMuxTuningForProfile(profile string) muxTuning {
-	switch normalizeMuxTuningProfile(profile) {
-	case muxProfileLatency:
-		return muxTuning{
-			flushInterval:    1 * time.Millisecond,
-			flushNotifyBytes: 2 * 1024,
-			flushBurstBytes:  12 * 1024,
-			flushMaxDelay:    2 * time.Millisecond,
-			streamDataQueue:  8,
-		}
-	case muxProfileThroughput:
-		return muxTuning{
-			flushInterval:    4 * time.Millisecond,
-			flushNotifyBytes: 8 * 1024,
-			flushBurstBytes:  48 * 1024,
-			flushMaxDelay:    8 * time.Millisecond,
-			streamDataQueue:  16,
-		}
-	default:
-		return muxTuning{
-			flushInterval:    2 * time.Millisecond,
-			flushNotifyBytes: 4 * 1024,
-			flushBurstBytes:  24 * 1024,
-			flushMaxDelay:    4 * time.Millisecond,
-			streamDataQueue:  8,
-		}
-	}
-}
-
-func resolveMuxTuning(cfg *Config) muxTuning {
-	t := defaultMuxTuningForProfile(cfg.MuxTuningProfile)
-	if cfg.MuxFlushIntervalMS > 0 {
-		t.flushInterval = time.Duration(cfg.MuxFlushIntervalMS) * time.Millisecond
-	}
-	if cfg.MuxFlushNotifyBytes > 0 {
-		t.flushNotifyBytes = cfg.MuxFlushNotifyBytes
-	}
-	if cfg.MuxFlushBurstBytes > 0 {
-		t.flushBurstBytes = cfg.MuxFlushBurstBytes
-	}
-	if cfg.MuxFlushMaxDelayMS > 0 {
-		t.flushMaxDelay = time.Duration(cfg.MuxFlushMaxDelayMS) * time.Millisecond
-	}
-	if cfg.MuxStreamDataQueue > 0 {
-		t.streamDataQueue = cfg.MuxStreamDataQueue
-	}
-	// Keep hard lower bounds to avoid pathological tiny/zero values.
-	if t.flushInterval < 1*time.Millisecond {
-		t.flushInterval = 1 * time.Millisecond
-	}
-	if t.flushMaxDelay < t.flushInterval {
-		t.flushMaxDelay = t.flushInterval
-	}
-	if t.flushNotifyBytes < 1024 {
-		t.flushNotifyBytes = 1024
-	}
-	if t.flushBurstBytes < t.flushNotifyBytes {
-		t.flushBurstBytes = t.flushNotifyBytes
-	}
-	if t.streamDataQueue < 1 {
-		t.streamDataQueue = 1
-	}
-	return t
-}
-
-func normalizeMuxTuningProfile(v string) string {
-	switch strings.ToLower(strings.TrimSpace(v)) {
-	case muxProfileLatency:
-		return muxProfileLatency
-	case muxProfileThroughput:
-		return muxProfileThroughput
-	default:
-		return muxProfileBalanced
-	}
-}
 
 var (
 	levelOrder = map[string]int{
@@ -204,8 +99,8 @@ var (
 			return &buf
 		},
 	}
-	muxStatsMu sync.Mutex
-	muxStats   MuxRuntimeStats
+	muxStatsMu      sync.Mutex
+	muxStats        MuxRuntimeStats
 )
 
 const defaultClientConfigTemplate = `{
@@ -227,8 +122,6 @@ const defaultClientConfigTemplate = `{
   "upstream_disable_compression": true,
   "upstream_h2_read_idle_timeout_ms": 30000,
   "upstream_h2_ping_timeout_ms": 10000,
-  "upstream_tls_session_cache_size": 256,
-  "mux_tuning_profile": "balanced",
   "client_instance_id": "",
   "log_level": "INFO"
 }
@@ -389,7 +282,7 @@ func RunProxyWithContext(ctx context.Context, cfg *Config) error {
 		v2Path:      cfg.UpstreamPath == "/proxy-v2",
 	}
 	if rt.v2Path {
-		rt.mux = newMuxClient(ctx, client, rt.upstreamURL, rt.authToken, rt.clientID, resolveMuxTuning(cfg))
+		rt.mux = newMuxClient(ctx, client, rt.upstreamURL, rt.authToken, rt.clientID)
 	}
 
 	socksLn, err := net.Listen("tcp", cfg.SocksListen)
@@ -531,16 +424,12 @@ type tunnelRW struct {
 	w *io.PipeWriter
 }
 
-func newMuxClient(_ context.Context, client *http.Client, upstreamURL string, authToken string, clientID string, tuning muxTuning) *muxClientRuntime {
-	if tuning.flushInterval <= 0 || tuning.flushNotifyBytes <= 0 || tuning.flushBurstBytes <= 0 || tuning.flushMaxDelay <= 0 || tuning.streamDataQueue <= 0 {
-		tuning = defaultMuxTuningForProfile(muxProfileBalanced)
-	}
+func newMuxClient(_ context.Context, client *http.Client, upstreamURL string, authToken string, clientID string) *muxClientRuntime {
 	return &muxClientRuntime{
 		client:      client,
 		upstreamURL: upstreamURL,
 		authToken:   authToken,
 		clientID:    clientID,
-		tuning:      tuning,
 	}
 }
 
@@ -583,29 +472,17 @@ type muxClientRuntime struct {
 	upstreamURL string
 	authToken   string
 	clientID    string
-	tuning      muxTuning
 
-	mu                      sync.Mutex
-	startMu                 sync.Mutex
-	writeMu                 sync.Mutex
-	started                 bool
-	everStarted             bool
-	startErr                error
-	reconnectTotal          uint64
-	reconnectFails          uint64
-	lastReconnectErr        string
-	lastReconnectClass      string
-	lastReconnectBackoff    time.Duration
-	nextReconnectAttempt    time.Time
-	streamW                 *io.PipeWriter
-	streamBW                *bufio.Writer
-	streamR                 io.ReadCloser
-	flushNotify             chan struct{}
-	stopFlush               chan struct{}
-	flushWG                 sync.WaitGroup
-	pendingFlushBytes       int
-	pendingFlushBytesAtomic atomic.Int64
-	lastFlushAt             time.Time
+	mu               sync.Mutex
+	startMu          sync.Mutex
+	writeMu          sync.Mutex
+	started          bool
+	everStarted      bool
+	startErr         error
+	reconnectTotal   uint64
+	lastReconnectErr string
+	streamW          *io.PipeWriter
+	streamR          io.ReadCloser
 
 	nextID  atomic.Uint32
 	streams map[uint32]*muxStream
@@ -619,17 +496,9 @@ type muxStream struct {
 	pr *io.PipeReader
 	pw *io.PipeWriter
 
-	dataCh     chan streamDataChunk
-	writerDone chan struct{}
-
-	openOnce  sync.Once
-	openCh    chan error
+	openOnce sync.Once
+	openCh   chan error
 	closeOnce sync.Once
-}
-
-type streamDataChunk struct {
-	data []byte
-	slot *[]byte
 }
 
 func (m *muxStream) Read(p []byte) (int, error) {
@@ -647,65 +516,13 @@ func (m *muxStream) Write(p []byte) (int, error) {
 }
 
 func (m *muxStream) Close() error {
-	m.closeWithError(nil, true)
-	return nil
-}
-
-func (m *muxStream) startWriter() {
-	go func() {
-		defer close(m.writerDone)
-		for chunk := range m.dataCh {
-			if len(chunk.data) == 0 {
-				putMuxPayloadBuffer(chunk.slot)
-				continue
-			}
-			if _, err := m.pw.Write(chunk.data); err != nil {
-				putMuxPayloadBuffer(chunk.slot)
-				for remain := range m.dataCh {
-					putMuxPayloadBuffer(remain.slot)
-				}
-				_ = m.pw.CloseWithError(err)
-				return
-			}
-			putMuxPayloadBuffer(chunk.slot)
-		}
-		_ = m.pw.Close()
-	}()
-}
-
-func (m *muxStream) queueData(payload []byte) error {
-	if len(payload) == 0 {
-		return nil
-	}
-	buf, slot := getMuxPayloadBuffer(len(payload))
-	copy(buf, payload)
-	chunk := streamDataChunk{
-		data: buf,
-		slot: slot,
-	}
-	select {
-	case m.dataCh <- chunk:
-		return nil
-	default:
-		putMuxPayloadBuffer(slot)
-		return errors.New("stream backpressure overflow")
-	}
-}
-
-func (m *muxStream) closeWithError(err error, sendClose bool) {
 	m.closeOnce.Do(func() {
-		if sendClose {
-			_ = m.parent.sendFrame(muxFrameClose, m.id, nil)
-		}
+		_ = m.parent.sendFrame(muxFrameClose, m.id, nil)
 		m.parent.removeStream(m.id)
-		if err != nil {
-			_ = m.pr.CloseWithError(err)
-		} else {
-			_ = m.pr.Close()
-		}
-		close(m.dataCh)
-		<-m.writerDone
+		_ = m.pw.Close()
+		_ = m.pr.Close()
 	})
+	return nil
 }
 
 func (m *muxStream) notifyOpen(err error) {
@@ -722,15 +539,12 @@ func (m *muxClientRuntime) Open(ctx context.Context, target string) (*muxStream,
 	id := m.nextID.Add(1)
 	pr, pw := io.Pipe()
 	ms := &muxStream{
-		id:         id,
-		parent:     m,
-		pr:         pr,
-		pw:         pw,
-		openCh:     make(chan error, 1),
-		dataCh:     make(chan streamDataChunk, m.tuning.streamDataQueue),
-		writerDone: make(chan struct{}),
+		id:     id,
+		parent: m,
+		pr:     pr,
+		pw:     pw,
+		openCh: make(chan error, 1),
 	}
-	ms.startWriter()
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
@@ -742,19 +556,25 @@ func (m *muxClientRuntime) Open(ctx context.Context, target string) (*muxStream,
 	m.mu.Unlock()
 
 	if err := m.sendFrame(muxFrameOpen, id, []byte(target)); err != nil {
-		ms.closeWithError(err, false)
+		m.removeStream(id)
+		_ = pw.CloseWithError(err)
+		_ = pr.Close()
 		return nil, err
 	}
 
 	select {
 	case err := <-ms.openCh:
 		if err != nil {
-			ms.closeWithError(err, false)
+			m.removeStream(id)
+			_ = pw.CloseWithError(err)
+			_ = pr.Close()
 			return nil, err
 		}
 		return ms, nil
 	case <-ctx.Done():
-		ms.closeWithError(ctx.Err(), false)
+		m.removeStream(id)
+		_ = pw.CloseWithError(ctx.Err())
+		_ = pr.Close()
 		return nil, ctx.Err()
 	}
 }
@@ -770,7 +590,6 @@ func (m *muxClientRuntime) start(ctx context.Context) error {
 		return err
 	}
 	isReconnectAttempt := m.everStarted
-	waitUntil := m.nextReconnectAttempt
 	m.started = true
 	m.closed = false
 	m.startErr = nil
@@ -782,21 +601,6 @@ func (m *muxClientRuntime) start(ctx context.Context) error {
 	}
 	m.everStarted = true
 	m.mu.Unlock()
-	if isReconnectAttempt && !waitUntil.IsZero() {
-		if delay := time.Until(waitUntil); delay > 0 {
-			logf("DEBUG", "mux reconnect backoff wait=%s", delay)
-			select {
-			case <-ctx.Done():
-				m.mu.Lock()
-				m.startErr = ctx.Err()
-				m.started = false
-				m.closed = true
-				m.mu.Unlock()
-				return ctx.Err()
-			case <-time.After(delay):
-			}
-		}
-	}
 	m.recordStats(func(s *MuxRuntimeStats) {
 		s.Connected = false
 		if isReconnectAttempt {
@@ -812,8 +616,20 @@ func (m *muxClientRuntime) start(ctx context.Context) error {
 		m.startErr = err
 		m.started = false
 		m.closed = true
+		if isReconnectAttempt {
+			m.lastReconnectErr = err.Error()
+		}
 		m.mu.Unlock()
-		m.markReconnectFailure(isReconnectAttempt, reconnectErrClass(err, "network"), err)
+		m.recordStats(func(s *MuxRuntimeStats) {
+			s.Connected = false
+			if isReconnectAttempt {
+				s.LastReconnectErr = err.Error()
+				s.ReconnectTotal = m.reconnectTotalValue()
+			}
+		})
+		if isReconnectAttempt {
+			logf("WARN", "mux reconnect failed total=%d err=%v", m.reconnectTotalValue(), err)
+		}
 		return err
 	}
 	req.Header.Set("x-auth-token", m.authToken)
@@ -827,7 +643,6 @@ func (m *muxClientRuntime) start(ctx context.Context) error {
 		m.mu.Lock()
 		m.startErr = err
 		m.mu.Unlock()
-		m.markReconnectFailure(isReconnectAttempt, reconnectErrClass(err, "network"), err)
 		return err
 	}
 	if resp.StatusCode != http.StatusOK {
@@ -838,40 +653,36 @@ func (m *muxClientRuntime) start(ctx context.Context) error {
 		m.startErr = err
 		m.started = false
 		m.closed = true
-		m.mu.Unlock()
-		class := "network"
-		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-			class = "auth"
+		if isReconnectAttempt {
+			m.lastReconnectErr = err.Error()
 		}
-		m.markReconnectFailure(isReconnectAttempt, class, err)
+		m.mu.Unlock()
+		m.recordStats(func(s *MuxRuntimeStats) {
+			s.Connected = false
+			if isReconnectAttempt {
+				s.LastReconnectErr = err.Error()
+				s.ReconnectTotal = m.reconnectTotalValue()
+			}
+		})
+		if isReconnectAttempt {
+			logf("WARN", "mux reconnect failed total=%d err=%v", m.reconnectTotalValue(), err)
+		}
 		return err
 	}
 
 	m.mu.Lock()
 	m.streamW = pw
-	m.streamBW = bufio.NewWriterSize(pw, muxWriteBufferSize)
 	m.streamR = resp.Body
-	m.flushNotify = make(chan struct{}, 1)
-	m.stopFlush = make(chan struct{})
-	m.pendingFlushBytes = 0
-	m.pendingFlushBytesAtomic.Store(0)
-	m.lastFlushAt = time.Now()
-	m.lastReconnectErr = ""
-	m.lastReconnectClass = ""
-	m.lastReconnectBackoff = 0
-	m.nextReconnectAttempt = time.Time{}
-	m.reconnectFails = 0
+	if isReconnectAttempt {
+		m.lastReconnectErr = ""
+	}
 	reconnectTotal := m.reconnectTotal
 	m.mu.Unlock()
-	m.startFlushLoop()
 	m.recordStats(func(s *MuxRuntimeStats) {
 		s.Connected = true
 		if isReconnectAttempt {
 			s.LastReconnectErr = ""
-			s.LastReconnectClass = ""
-			s.LastReconnectBackoffMS = 0
 			s.ReconnectTotal = reconnectTotal
-			s.ReconnectConsecutiveFails = 0
 		}
 	})
 	if isReconnectAttempt {
@@ -922,24 +733,21 @@ func (m *muxClientRuntime) dispatchFrame(frameType byte, streamID uint32, payloa
 		}
 		ms.notifyOpen(errors.New(msg))
 	case muxFrameData:
-		if err := ms.queueData(payload); err != nil {
-			ms.notifyOpen(err)
-			ms.closeWithError(err, true)
-		}
+		_, _ = ms.pw.Write(payload)
 	case muxFrameClose:
 		ms.notifyOpen(errors.New("stream closed"))
-		ms.closeWithError(errors.New("stream closed"), false)
+		_ = ms.pw.Close()
+		m.removeStream(streamID)
 	}
 }
 
 func (m *muxClientRuntime) sendFrame(frameType byte, streamID uint32, payload []byte) error {
 	m.mu.Lock()
-	if m.closed || m.streamBW == nil {
+	if m.closed || m.streamW == nil {
 		m.mu.Unlock()
 		return errors.New("mux not ready")
 	}
-	w := m.streamBW
-	flushNotify := m.flushNotify
+	w := m.streamW
 	m.mu.Unlock()
 
 	var header [9]byte
@@ -953,30 +761,9 @@ func (m *muxClientRuntime) sendFrame(frameType byte, streamID uint32, payload []
 		return err
 	}
 	if len(payload) == 0 {
-		return m.flushBufferedLocked(w)
+		return nil
 	}
-	if err := writeAll(w, payload); err != nil {
-		return err
-	}
-	m.pendingFlushBytes += len(header) + len(payload)
-	m.pendingFlushBytesAtomic.Store(int64(m.pendingFlushBytes))
-	// Control frames should be delivered promptly; data frames are batch-flushed.
-	if frameType != muxFrameData {
-		return m.flushBufferedLocked(w)
-	}
-	// Adaptive flush:
-	// - high burst: flush immediately to reduce queueing delay
-	// - low traffic: rely on periodic flush with lightweight notify
-	if m.pendingFlushBytes >= m.tuning.flushBurstBytes || time.Since(m.lastFlushAt) >= m.tuning.flushMaxDelay {
-		return m.flushBufferedLocked(w)
-	}
-	if flushNotify != nil && m.pendingFlushBytes >= m.tuning.flushNotifyBytes {
-		select {
-		case flushNotify <- struct{}{}:
-		default:
-		}
-	}
-	return nil
+	return writeAll(w, payload)
 }
 
 func writeAll(w io.Writer, p []byte) error {
@@ -1034,19 +821,10 @@ func (m *muxClientRuntime) closeAll(err error) {
 	}
 	m.streams = map[uint32]*muxStream{}
 	w := m.streamW
-	bw := m.streamBW
 	r := m.streamR
-	stopFlush := m.stopFlush
 	m.streamW = nil
-	m.streamBW = nil
 	m.streamR = nil
-	m.flushNotify = nil
-	m.stopFlush = nil
 	m.mu.Unlock()
-	if stopFlush != nil {
-		close(stopFlush)
-		m.flushWG.Wait()
-	}
 	m.recordStats(func(s *MuxRuntimeStats) {
 		s.Connected = false
 		if err != nil {
@@ -1059,11 +837,6 @@ func (m *muxClientRuntime) closeAll(err error) {
 	}
 
 	if w != nil {
-		if bw != nil {
-			m.writeMu.Lock()
-			_ = bw.Flush()
-			m.writeMu.Unlock()
-		}
 		_ = w.CloseWithError(err)
 	}
 	if r != nil {
@@ -1071,75 +844,9 @@ func (m *muxClientRuntime) closeAll(err error) {
 	}
 	for _, s := range streams {
 		s.notifyOpen(err)
-		s.closeWithError(err, false)
+		_ = s.pw.CloseWithError(err)
+		_ = s.pr.Close()
 	}
-}
-
-func (m *muxClientRuntime) startFlushLoop() {
-	m.mu.Lock()
-	stop := m.stopFlush
-	notify := m.flushNotify
-	m.mu.Unlock()
-	if stop == nil || notify == nil {
-		return
-	}
-	m.flushWG.Add(1)
-	go func() {
-		defer m.flushWG.Done()
-		ticker := time.NewTicker(m.tuning.flushInterval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				if m.pendingFlushBytesAtomic.Load() == 0 {
-					continue
-				}
-				_ = m.flushBuffered()
-			case <-notify:
-				if m.pendingFlushBytesAtomic.Load() == 0 {
-					continue
-				}
-				// Coalesce burst notifications to avoid redundant flush wakeups.
-				for {
-					select {
-					case <-notify:
-					default:
-						goto doFlush
-					}
-				}
-			doFlush:
-				_ = m.flushBuffered()
-			case <-stop:
-				_ = m.flushBuffered()
-				return
-			}
-		}
-	}()
-}
-
-func (m *muxClientRuntime) flushBuffered() error {
-	m.mu.Lock()
-	bw := m.streamBW
-	m.mu.Unlock()
-	if bw == nil {
-		return nil
-	}
-	m.writeMu.Lock()
-	defer m.writeMu.Unlock()
-	return m.flushBufferedLocked(bw)
-}
-
-func (m *muxClientRuntime) flushBufferedLocked(bw *bufio.Writer) error {
-	if bw == nil {
-		return nil
-	}
-	if err := bw.Flush(); err != nil {
-		return err
-	}
-	m.pendingFlushBytes = 0
-	m.pendingFlushBytesAtomic.Store(0)
-	m.lastFlushAt = time.Now()
-	return nil
 }
 
 func (m *muxClientRuntime) recordStats(update func(*MuxRuntimeStats)) {
@@ -1152,63 +859,6 @@ func (m *muxClientRuntime) reconnectTotalValue() uint64 {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.reconnectTotal
-}
-
-func (m *muxClientRuntime) markReconnectFailure(isReconnectAttempt bool, class string, err error) {
-	if !isReconnectAttempt {
-		return
-	}
-	m.mu.Lock()
-	m.reconnectFails++
-	failures := m.reconnectFails
-	backoff := reconnectBackoffFor(class, failures)
-	m.lastReconnectErr = err.Error()
-	m.lastReconnectClass = class
-	m.lastReconnectBackoff = backoff
-	m.nextReconnectAttempt = time.Now().Add(backoff)
-	total := m.reconnectTotal
-	m.mu.Unlock()
-
-	m.recordStats(func(s *MuxRuntimeStats) {
-		s.Connected = false
-		s.LastReconnectErr = err.Error()
-		s.LastReconnectClass = class
-		s.LastReconnectBackoffMS = backoff.Milliseconds()
-		s.ReconnectTotal = total
-		s.ReconnectConsecutiveFails = failures
-	})
-	logf("WARN", "mux reconnect failed total=%d consecutive=%d class=%s backoff_ms=%d err=%v", total, failures, class, backoff.Milliseconds(), err)
-}
-
-func reconnectBackoffFor(class string, failures uint64) time.Duration {
-	shift := failures - 1
-	if shift > 5 {
-		shift = 5
-	}
-	backoff := muxReconnectBaseBackoff * time.Duration(1<<shift)
-	if backoff > muxReconnectMaxBackoff {
-		backoff = muxReconnectMaxBackoff
-	}
-	if class == "auth" || class == "tls" {
-		if backoff < 2*time.Second {
-			backoff = 2 * time.Second
-		}
-	}
-	return backoff
-}
-
-func reconnectErrClass(err error, fallback string) string {
-	msg := strings.ToLower(err.Error())
-	if strings.Contains(msg, "x509") || strings.Contains(msg, "certificate") || strings.Contains(msg, "tls") {
-		return "tls"
-	}
-	if strings.Contains(msg, "unauthorized") || strings.Contains(msg, "forbidden") || strings.Contains(msg, "status=401") || strings.Contains(msg, "status=403") {
-		return "auth"
-	}
-	if strings.Contains(msg, "timeout") || strings.Contains(msg, "connection refused") || strings.Contains(msg, "reset by peer") || strings.Contains(msg, "broken pipe") {
-		return "network"
-	}
-	return fallback
 }
 
 func showSystemProxyStatus() error {
@@ -1305,10 +955,6 @@ func loadConfig(path string) (*Config, error) {
 	if cfg.UpstreamH2PingTimeoutMS <= 0 {
 		cfg.UpstreamH2PingTimeoutMS = 10000
 	}
-	if cfg.UpstreamTLSSessionCacheSize <= 0 {
-		cfg.UpstreamTLSSessionCacheSize = 256
-	}
-	cfg.MuxTuningProfile = normalizeMuxTuningProfile(cfg.MuxTuningProfile)
 	return &cfg, nil
 }
 
@@ -1326,7 +972,7 @@ func runProxy(cfg *Config) error {
 		v2Path:      cfg.UpstreamPath == "/proxy-v2",
 	}
 	if rt.v2Path {
-		rt.mux = newMuxClient(context.Background(), client, rt.upstreamURL, rt.authToken, rt.clientID, resolveMuxTuning(cfg))
+		rt.mux = newMuxClient(context.Background(), client, rt.upstreamURL, rt.authToken, rt.clientID)
 	}
 
 	socksLn, err := net.Listen("tcp", cfg.SocksListen)
@@ -1390,7 +1036,6 @@ func newHTTPClient(cfg *Config) (*http.Client, error) {
 		ServerName:         cfg.ServerName,
 		InsecureSkipVerify: !cfg.RejectUnauthorized, // nolint:gosec
 		MinVersion:         tls.VersionTLS12,
-		ClientSessionCache: tls.NewLRUClientSessionCache(cfg.UpstreamTLSSessionCacheSize),
 	}
 
 	if cfg.CAFile != "" {
