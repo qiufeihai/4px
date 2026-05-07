@@ -2,7 +2,6 @@ const fs = require('fs');
 const net = require('net');
 const path = require('path');
 const http2 = require('http2');
-const { Duplex } = require('stream');
 const { monitorEventLoopDelay } = require('perf_hooks');
 const { loadConfig, resolvePath } = require('./config');
 const { createLogger } = require('./logger');
@@ -24,12 +23,6 @@ const socksListenBacklog = cfg.socksListenBacklog || 4096;
 const upstreamAuthToken = String((cfg.upstream && cfg.upstream.authToken) || '').trim();
 // Keep runtime behavior stable: this build is proxy-only.
 const upstreamPath = '/proxy';
-const useProxyV2Headers = false;
-const MUX_FRAME_OPEN = 1;
-const MUX_FRAME_DATA = 2;
-const MUX_FRAME_CLOSE = 3;
-const MUX_FRAME_OPEN_RESULT = 4;
-const MUX_FRAME_OPEN_ERROR = 5;
 
 if (!upstreamAuthToken) {
   throw new Error('client config invalid: upstream.authToken is required');
@@ -56,60 +49,6 @@ const stats = {
   retryableErrorTotal: 0,
   nonRetryableErrorTotal: 0
 };
-const muxState = {
-  req: null,
-  connecting: null,
-  incoming: Buffer.alloc(0),
-  channels: new Map(),
-  nextChannelID: 1,
-  writeQueue: [],
-  flushScheduled: false
-};
-
-class MuxChannelStream extends Duplex {
-  constructor(channelID, targetHost, targetPort) {
-    super();
-    this.id = `mux-${channelID}`;
-    this.channelID = channelID;
-    this.targetHost = targetHost;
-    this.targetPort = targetPort;
-    this.opened = false;
-    this.openErr = null;
-    // OPEN 阶段超时时 stream 可能在业务层绑定 error 监听前被销毁，避免触发进程级未捕获异常。
-    this.on('error', () => {});
-  }
-
-  _read() {}
-
-  _write(chunk, _enc, cb) {
-    if (!this.opened) {
-      cb(new Error('mux channel not opened'));
-      return;
-    }
-    muxSendFrame(MUX_FRAME_DATA, this.channelID, chunk, cb);
-  }
-
-  _final(cb) {
-    muxSendFrame(MUX_FRAME_CLOSE, this.channelID, Buffer.alloc(0), () => cb());
-  }
-
-  close() {
-    if (this.destroyed) return;
-    this.end();
-  }
-
-  _destroy(err, cb) {
-    const ch = muxState.channels.get(this.channelID);
-    if (ch && ch.stream === this) {
-      muxState.channels.delete(this.channelID);
-    }
-    if (this.opened && muxState.req && !muxState.req.destroyed) {
-      muxSendFrame(MUX_FRAME_CLOSE, this.channelID, Buffer.alloc(0), () => cb(err));
-      return;
-    }
-    cb(err);
-  }
-}
 const loopDelay = monitorEventLoopDelay({ resolution: 20 });
 loopDelay.enable();
 
@@ -207,189 +146,7 @@ function getH2Session(poolIndex) {
   return slot.pending;
 }
 
-function muxEncodeFrame(frameType, channelID, payload) {
-  const body = Buffer.isBuffer(payload) ? payload : Buffer.from(payload || '');
-  const header = Buffer.allocUnsafe(9);
-  header.writeUInt8(frameType, 0);
-  header.writeUInt32BE(channelID >>> 0, 1);
-  header.writeUInt32BE(body.length >>> 0, 5);
-  return body.length > 0 ? [header, body] : [header];
-}
-
-function muxFlushQueue() {
-  const req = muxState.req;
-  if (!req || req.destroyed) return;
-  while (muxState.writeQueue.length > 0) {
-    const item = muxState.writeQueue[0];
-    const ok = req.write(item.buf);
-    if (!ok) return;
-    muxState.writeQueue.shift();
-    if (typeof item.cb === 'function') item.cb();
-  }
-}
-
-function muxScheduleFlush() {
-  if (muxState.flushScheduled) return;
-  muxState.flushScheduled = true;
-  setImmediate(() => {
-    muxState.flushScheduled = false;
-    muxFlushQueue();
-  });
-}
-
-function muxSendFrame(frameType, channelID, payload, cb) {
-  const parts = muxEncodeFrame(frameType, channelID, payload);
-  if (parts.length === 1) {
-    muxState.writeQueue.push({ buf: parts[0], cb });
-  } else {
-    muxState.writeQueue.push({ buf: parts[0], cb: null });
-    muxState.writeQueue.push({ buf: parts[1], cb });
-  }
-  muxScheduleFlush();
-}
-
-function muxHandleIncomingFrame(frameType, channelID, payload) {
-  const ch = muxState.channels.get(channelID);
-  if (!ch) return;
-  if (frameType === MUX_FRAME_OPEN_RESULT) {
-    if (ch.openTimer) {
-      clearTimeout(ch.openTimer);
-      ch.openTimer = null;
-    }
-    ch.stream.opened = true;
-    ch.resolve(ch.stream);
-    return;
-  }
-  if (frameType === MUX_FRAME_OPEN_ERROR) {
-    if (ch.openTimer) {
-      clearTimeout(ch.openTimer);
-      ch.openTimer = null;
-    }
-    const msg = payload.length > 0 ? payload.toString('utf8') : 'mux open failed';
-    ch.stream.openErr = new Error(msg);
-    ch.reject(ch.stream.openErr);
-    muxState.channels.delete(channelID);
-    ch.stream.destroy(ch.stream.openErr);
-    return;
-  }
-  if (frameType === MUX_FRAME_DATA) {
-    ch.stream.push(payload);
-    return;
-  }
-  if (frameType === MUX_FRAME_CLOSE) {
-    muxState.channels.delete(channelID);
-    ch.stream.push(null);
-    ch.stream.end();
-  }
-}
-
-function muxProcessIncoming(chunk) {
-  muxState.incoming = muxState.incoming.length > 0 ? Buffer.concat([muxState.incoming, chunk]) : chunk;
-  while (muxState.incoming.length >= 9) {
-    const frameType = muxState.incoming.readUInt8(0);
-    const channelID = muxState.incoming.readUInt32BE(1);
-    const payloadLen = muxState.incoming.readUInt32BE(5);
-    if (muxState.incoming.length < 9 + payloadLen) return;
-    const payload = payloadLen > 0 ? muxState.incoming.subarray(9, 9 + payloadLen) : Buffer.alloc(0);
-    muxState.incoming = muxState.incoming.subarray(9 + payloadLen);
-    muxHandleIncomingFrame(frameType, channelID, payload);
-  }
-}
-
-function muxReset(err) {
-  const reason = err || new Error('mux disconnected');
-  const pending = Array.from(muxState.channels.values());
-  muxState.channels.clear();
-  muxState.incoming = Buffer.alloc(0);
-  muxState.writeQueue.length = 0;
-  muxState.req = null;
-  muxState.connecting = null;
-  for (const ch of pending) {
-    if (ch.openTimer) {
-      clearTimeout(ch.openTimer);
-      ch.openTimer = null;
-    }
-    if (!ch.stream.opened) ch.reject(reason);
-    ch.stream.destroy(reason);
-  }
-}
-
-async function ensureMuxConnection() {
-  if (muxState.req && !muxState.req.closed && !muxState.req.destroyed) return muxState.req;
-  if (muxState.connecting) return muxState.connecting;
-
-  muxState.connecting = (async () => {
-    const session = await getH2Session(0);
-    const req = session.request({
-      ':method': 'POST',
-      ':path': upstreamPath,
-      'x-auth-token': upstreamAuthToken,
-      'x-4px-v2': '1',
-      'x-4px-v2-mode': 'mux'
-    });
-    const established = await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        req.close();
-        reject(new Error('mux upstream response timeout'));
-      }, streamResponseTimeoutMs);
-      req.once('response', (headers) => {
-        clearTimeout(timer);
-        if (headers[':status'] !== 200) {
-          reject(new Error(`mux upstream status=${headers[':status']}`));
-          return;
-        }
-        resolve(true);
-      });
-      req.once('error', (err) => {
-        clearTimeout(timer);
-        reject(err);
-      });
-    });
-    if (!established) {
-      throw new Error('mux establish failed');
-    }
-
-    req.on('data', muxProcessIncoming);
-    req.on('drain', () => muxFlushQueue());
-    req.on('close', () => muxReset(new Error('mux stream closed')));
-    req.on('error', (err) => muxReset(err));
-    muxState.req = req;
-    muxState.connecting = null;
-    logger.info('mux tunnel established');
-    return req;
-  })();
-
-  try {
-    return muxState.connecting;
-  } catch (err) {
-    muxState.connecting = null;
-    throw err;
-  }
-}
-
-async function openProxyStreamMux(targetHost, targetPort) {
-  await ensureMuxConnection();
-  const channelID = muxState.nextChannelID;
-  muxState.nextChannelID += 1;
-  const target = `${targetHost}:${targetPort}`;
-  const stream = new MuxChannelStream(channelID, targetHost, targetPort);
-  return new Promise((resolve, reject) => {
-    const openTimer = setTimeout(() => {
-      muxState.channels.delete(channelID);
-      const err = new Error('mux open response timeout');
-      reject(err);
-      stream.destroy(err);
-    }, streamResponseTimeoutMs);
-    muxState.channels.set(channelID, { stream, resolve, reject, openTimer });
-    muxSendFrame(MUX_FRAME_OPEN, channelID, Buffer.from(target, 'utf8'));
-    logger.info(`open mux channel id=${channelID} target=${target}`);
-  });
-}
-
 async function openProxyStream(targetHost, targetPort) {
-  if (useProxyV2Headers) {
-    return openProxyStreamMux(targetHost, targetPort);
-  }
   const poolIndex = pickPoolIndex();
   const session = await getH2Session(poolIndex);
   const reqHeaders = {
@@ -399,12 +156,7 @@ async function openProxyStream(targetHost, targetPort) {
     'x-target-host': targetHost,
     'x-target-port': String(targetPort)
   };
-  if (useProxyV2Headers) {
-    reqHeaders['x-4px-v2'] = '1';
-  }
-  if (!useProxyV2Headers) {
-    reqHeaders['x-target'] = Buffer.from(`${targetHost}:${targetPort}`, 'utf8').toString('base64url');
-  }
+  reqHeaders['x-target'] = Buffer.from(`${targetHost}:${targetPort}`, 'utf8').toString('base64url');
   const stream = session.request(reqHeaders);
   logger.info(`open stream idx=${poolIndex} target=${targetHost}:${targetPort}`);
 
