@@ -34,7 +34,5 @@
   "remoteConnectTimeoutMs": 15000,
   "remoteIdleTimeoutMs": 300000,
   "remoteKeepAliveInitialDelayMs": 30000,
-  "streamIdleTimeoutMs": 300000,
-  "muxFlushNotifyBytes": 4096,
-  "muxFlushMaxDelayMs": 2
+  "streamIdleTimeoutMs": 300000
 }
