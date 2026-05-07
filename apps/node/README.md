@@ -117,7 +117,7 @@ node bin/4px.js client -c config/client.json
 - `upstream.authToken`：上游鉴权 token（填某个用户 `authToken` 或命中 `authTokens` 列表的 token）
 - `upstream.caFile`：自定义 CA 文件路径（可选）
 - `upstream.rejectUnauthorized`：是否严格校验证书
-- `h2SessionPoolSize`：H2 会话池大小
+- `h2SessionPoolSize`：H2 会话池大小（默认 `1`，单用户低抖动优先）
 - `localAuth`：本地 SOCKS5 用户名密码认证
 - `logLevel`：日志等级
 - `maxBufferedBytes`：单连接写缓冲上限

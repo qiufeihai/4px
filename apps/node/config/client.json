@@ -10,7 +10,7 @@
     "rejectUnauthorized": true
   },
   "logLevel": "WARN",
-  "h2SessionPoolSize": 2,
+  "h2SessionPoolSize": 1,
   "maxBufferedBytes": 4194304,
   "metricsIntervalMs": 30000,
   "socksListenBacklog": 4096,

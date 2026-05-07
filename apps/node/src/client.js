@@ -18,7 +18,7 @@ const httpListen = cfg.httpListen || '';
 const httpListenBacklog = cfg.httpListenBacklog || 4096;
 const maxBufferedBytes = cfg.maxBufferedBytes || 4 * 1024 * 1024;
 const metricsIntervalMs = cfg.metricsIntervalMs || 30000;
-const h2SessionPoolSize = Math.max(1, cfg.h2SessionPoolSize || 2);
+const h2SessionPoolSize = Math.max(1, cfg.h2SessionPoolSize || 1);
 const socksListenBacklog = cfg.socksListenBacklog || 4096;
 const upstreamAuthToken = String((cfg.upstream && cfg.upstream.authToken) || '').trim();
 // Keep runtime behavior stable: this build is proxy-only.
@@ -156,7 +156,6 @@ async function openProxyStream(targetHost, targetPort) {
     'x-target-host': targetHost,
     'x-target-port': String(targetPort)
   };
-  reqHeaders['x-target'] = Buffer.from(`${targetHost}:${targetPort}`, 'utf8').toString('base64url');
   const stream = session.request(reqHeaders);
   logger.info(`open stream idx=${poolIndex} target=${targetHost}:${targetPort}`);
 
@@ -386,8 +385,8 @@ function startHttpProxyIfEnabled() {
       handled = true;
       socket.removeListener('data', handleHeader);
 
-      const head = buffered.slice(0, end + 4).toString('utf8');
-      const pending = buffered.slice(end + 4);
+      const head = buffered.subarray(0, end + 4).toString('utf8');
+      const pending = buffered.subarray(end + 4);
       const parsed = parseProxyHeader(head);
       if (!parsed) {
         socket.end('HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n');
