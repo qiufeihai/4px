@@ -15,7 +15,7 @@ var assets embed.FS
 func main() {
 	app := NewApp()
 	err := wails.Run(&options.App{
-		Title:  "4px Client GUI",
+		Title:  "4px Client",
 		Width:  980,
 		Height: 680,
 		AssetServer: &assetserver.Options{
