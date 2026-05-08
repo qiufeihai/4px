@@ -55,7 +55,7 @@ cd apps/go/gui
 - GUI 能正常启动；
 - 可加载并保存配置；
 - 可启动/停止 client；
-- `upstream_path=/proxy-v2` 时代理请求可达；
+- `upstream_path=/proxy` 时代理请求可达；
 - 发布包名包含正确的 `version` 与 `gitsha`。
 
 推荐加一条固定健康检查（本地代理）：
@@ -72,7 +72,7 @@ seq 200 | xargs -P 40 -I{} sh -c 'curl -sS -o /dev/null -x http://127.0.0.1:7788
 
 - 保留上一个稳定发布包（至少 1 个）。
 - 新版本异常时直接回滚到上个发布目录（或其归档）；
-- 运行中链路异常可改配置回退到 `/proxy`。
+- 运行中链路异常时优先检查服务端连通性、鉴权与系统代理状态，再执行回滚。
 
 ## 发布到 GitHub（手动）
 
@@ -154,7 +154,7 @@ cd apps/go/gui
 ## 4px GUI v0.6.0
 
 ### Highlights
-- Default mode keeps proxy-v2.
+- Default mode keeps `/proxy`.
 - Timeout defaults updated for stability.
 - Added one-click GUI packaging script.
 

@@ -31,4 +31,4 @@ MVP scope for Android:
    - Config persistence
    - Connect/disconnect state machine
    - VPNService tunnel integration
-   - proxy-v2 default wiring and runtime diagnostics
+   - proxy default wiring and runtime diagnostics

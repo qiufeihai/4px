@@ -1,6 +1,6 @@
-# 4px Mux 分档选型建议
+# 4px Mux 分档选型建议（历史归档）
 
-本文基于 `apps/go/benchmarks_go/profile_{latency|balanced|throughput}_20260506` 的 `gradient + repeat=3` 中位值结果。
+本文基于历史基准测试数据，仅作归档参考；当前主路径以 `/proxy` 为准。
 
 ## 结论
 
@@ -10,7 +10,7 @@
   - `throughput`：CPU 更低，但中高并发尾延迟波动更大。
   - `latency`：部分并发档 `p95` 更好，但 CPU 成本最高。
 
-## 快速对比（proxy-v2 中位值）
+## 快速对比（历史 mux 中位值）
 
 | profile | c80 p95 (ms) | c120 p95 (ms) | c160 p95 (ms) | c80 p99 (ms) | c120 p99 (ms) | c160 p99 (ms) | CPU 中位值范围 (%) | RSS 中位值范围 (MB) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|

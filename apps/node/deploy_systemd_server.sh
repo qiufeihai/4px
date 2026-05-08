@@ -4,7 +4,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SERVER_CFG="$SCRIPT_DIR/config/server.json"
 NODE_BIN="$(command -v node || true)"
-LOG_LEVEL_VALUE="${LOG_LEVEL:-WARN}"
 USE_CLUSTER="${USE_CLUSTER:-0}"
 WORKERS_VALUE="${WORKERS:-2}"
 LIMIT_NOFILE_VALUE="${LIMIT_NOFILE:-100000}"
@@ -48,7 +47,6 @@ Type=simple
 User=root
 WorkingDirectory=$SCRIPT_DIR
 Environment=NODE_ENV=production
-Environment=LOG_LEVEL=$LOG_LEVEL_VALUE
 Environment=WORKERS=$WORKERS_VALUE
 Environment=TARGET_SCRIPT=$SCRIPT_DIR/src/server.js
 ExecStart=$SERVER_EXEC

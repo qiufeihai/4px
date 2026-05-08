@@ -37,7 +37,7 @@ Expected output:
 - Add configuration storage (host/port/token/path)
 - Add connect/disconnect service state
 - Implement `VpnService` + tunnel pipeline
-- Integrate proxy-v2 path by default
+- Integrate proxy path by default
 
 ## Resume notes for future AI
 

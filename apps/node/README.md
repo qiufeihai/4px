@@ -1,17 +1,18 @@
 # 4px Node Agent
 
 Node 版本的 `4px` 负责核心数据面，包含：
-- `server`：远端入口，接收 `TLS + HTTP/2` 请求并转发到目标地址。
+- `server`：基于 HTTP/2 隧道的正向代理服务端，接收 `TLS + HTTP/2` 请求并转发到目标地址。
 - `client`：本地入口，提供 `SOCKS5` 与 `HTTP` 代理，再转发到远端 `server`。
 - `bin/4px.js`：统一 CLI 入口，支持自动初始化默认配置。
 
+当前默认主路径：`/proxy`。`proxy-v2` 仅保留历史性能记录，不作为现行默认方案。
+
 ## 核心特性
 
-- 统一数据面：当前版本固定 `proxy-only`（`POST /proxy`）。
-- 低抖动优先：保留经典单流转发路径，时延行为更可预测。
-- 可观测增强：支持 `trace_id` 贯通日志与慢建链诊断。
-- 运维能力：支持 Web 管理端、systemd 部署、指标日志。
-- 防护能力：内置背压处理与缓冲区上限控制，避免单连接拖垮进程。
+- 单路径数据面：当前版本固定 `POST /proxy`。
+- 多用户鉴权：支持 `authTokens` 与 `server.users.json` 并行鉴权。
+- 可观测与防护：支持 `trace_id`、慢建链统计、过载保护、DNS 缓存与短时熔断。
+- 运维能力：支持 Web 管理端、systemd 部署、日志与资源观测。
 
 ## 目录说明
 
@@ -133,154 +134,29 @@ node bin/4px.js client -c config/client.json
 - `remoteKeepAliveInitialDelayMs`：目标连接 KeepAlive 初始延迟
 - `streamIdleTimeoutMs`：H2 stream 空闲超时（`0` 表示关闭）
 
-### 正向代理性能优化项（server）
+### 性能参数（建议重点）
 
-- 双栈自动建连：`remoteAutoSelectFamily=true` 时，server 尝试启用 Node 内置 `autoSelectFamily`，自动在 IPv4/IPv6 间做快速择优，降低 DNS/网络波动时的 `connect_ms` 尾延迟。
-- 竞速延迟控制：`remoteAutoSelectFamilyAttemptTimeoutMs` 控制双栈竞速间隔，默认 `300ms`。网络较稳可适当调低（如 `150~250`），网络复杂建议保持默认。
-- 建连风暴保护：`remoteConnectMaxInFlight` 用于限制同时进行中的目标建连数；超阈值请求会快速返回 `503`，避免 event loop 被大量慢建连拖垮。
-- 热点目标隔离：`remoteConnectMaxInFlightPerHost` 用于限制单个目标站点占用过多建连额度，避免“一个热点拖垮全部目标”。
-- 突发削峰：`remoteConnectOverloadWaitMs` 在过载时先做一次短暂等待再判定是否拒绝，可减少瞬时毛刺导致的 `503`。
-- 等待队列保护：`remoteConnectOverloadMaxWaiters` 限制等待队列规模，避免过载时等待请求无限增长。
-- 轻量 DNS 缓存：为目标域名提供正缓存与负缓存，减少高并发下重复解析与失败重试放大。
-- IPv6 不可达规避：在 DNS 缓存路径下可优先选择 IPv4（`remoteDnsPreferIPv4=true`），减少无 IPv6 出口时的 `ENETUNREACH`。
-- 目标级短时熔断：对连续建连失败的 `host:port` 短时拒绝，减少对故障目标的无效重试与全局资源占用。
-- 过载日志限频：`remoteConnectOverloadLogMinIntervalMs` 用于限制 `503` 过载拒绝告警频率，避免高峰期日志风暴进一步放大抖动。
-- 入站连接低延迟：`h2SessionNoDelay=true` 可减少客户端到 server 的小包合并等待；弱网小包场景下通常更稳。
-- 入站会话保活：`h2SessionKeepAlive` 有助于减少长连接空闲后异常断连带来的重连抖动。
-- 兼容提示：部分 Node 运行时会限制 HTTP/2 socket 直接操作。若出现该限制，server 会自动禁用该优化并继续运行。
-- 兼容回退：若当前 Node 运行时不支持 `autoSelectFamily`，server 会自动回退到默认 `net.createConnection` 行为，不影响服务可用性。
-- 路径说明：当 `autoSelectFamily` 可用时，域名建连优先走 Node 内置地址选择；当不可用时，才使用 DNS 缓存选址策略。
-- 启动可观测：server 启动日志会打印 `remote auto select family enabled=... attempt_timeout_ms=...`，用于确认配置是否生效。
-- 建议搭配：生产环境建议和 `slowEstablishEnabled`、`establishWarnThresholdMs` 一起使用，持续观察 `connect_ms` 与 `ttfb_ms` 的变化。
+- 建连并发：`remoteConnectMaxInFlight`、`remoteConnectMaxInFlightPerHost`
+- 过载削峰：`remoteConnectOverloadWaitMs`、`remoteConnectOverloadMaxWaiters`、`remoteConnectOverloadLogMinIntervalMs`
+- DNS 缓存：`remoteDnsCacheEnabled`、`remoteDnsPreferIPv4`、`remoteDnsCacheTtlMs`、`remoteDnsNegativeCacheTtlMs`
+- 短时熔断：`remoteCircuitEnabled`、`remoteCircuitFailureThreshold`、`remoteCircuitOpenMs`
+- 慢链路诊断：`slowEstablishEnabled`、`establishWarnThresholdMs`、`remoteErrorLogMinIntervalMs`
 
-### 推荐生产参数模板（server）
-
-低延迟优先（先压 `connect_ms` 尾延迟）：
-
-```json
-{
-  "h2SessionNoDelay": true,
-  "h2SessionKeepAlive": true,
-  "h2SessionKeepAliveInitialDelayMs": 30000,
-  "remoteAutoSelectFamily": true,
-  "remoteAutoSelectFamilyAttemptTimeoutMs": 200,
-  "remoteConnectMaxInFlight": 3072,
-  "remoteConnectMaxInFlightPerHost": 768,
-  "remoteConnectOverloadWaitMs": 20,
-  "remoteConnectOverloadMaxWaiters": 768,
-  "remoteConnectOverloadLogMinIntervalMs": 2000,
-  "remoteDnsCacheEnabled": true,
-  "remoteDnsPreferIPv4": true,
-  "remoteDnsCacheTtlMs": 45000,
-  "remoteDnsNegativeCacheTtlMs": 3000,
-  "remoteDnsCacheMaxEntries": 4096,
-  "remoteCircuitEnabled": true,
-  "remoteCircuitFailureThreshold": 6,
-  "remoteCircuitOpenMs": 12000,
-  "remoteCircuitLogMinIntervalMs": 2000,
-  "remoteCircuitMaxTargets": 4096,
-  "remoteConnectTimeoutMs": 12000,
-  "remoteIdleTimeoutMs": 240000,
-  "streamIdleTimeoutMs": 240000,
-  "slowEstablishEnabled": true,
-  "establishWarnThresholdMs": 1200,
-  "establishWarnMinIntervalMs": 5000,
-  "remoteErrorLogMinIntervalMs": 3000
-}
-```
-
-稳定优先（先控波动与日志开销）：
-
-```json
-{
-  "h2SessionNoDelay": true,
-  "h2SessionKeepAlive": true,
-  "h2SessionKeepAliveInitialDelayMs": 30000,
-  "remoteAutoSelectFamily": true,
-  "remoteAutoSelectFamilyAttemptTimeoutMs": 300,
-  "remoteConnectMaxInFlight": 4096,
-  "remoteConnectMaxInFlightPerHost": 1024,
-  "remoteConnectOverloadWaitMs": 20,
-  "remoteConnectOverloadMaxWaiters": 1024,
-  "remoteConnectOverloadLogMinIntervalMs": 3000,
-  "remoteDnsCacheEnabled": true,
-  "remoteDnsPreferIPv4": true,
-  "remoteDnsCacheTtlMs": 60000,
-  "remoteDnsNegativeCacheTtlMs": 5000,
-  "remoteDnsCacheMaxEntries": 4096,
-  "remoteCircuitEnabled": true,
-  "remoteCircuitFailureThreshold": 8,
-  "remoteCircuitOpenMs": 15000,
-  "remoteCircuitLogMinIntervalMs": 3000,
-  "remoteCircuitMaxTargets": 4096,
-  "remoteConnectTimeoutMs": 15000,
-  "remoteIdleTimeoutMs": 300000,
-  "streamIdleTimeoutMs": 300000,
-  "slowEstablishEnabled": false,
-  "establishWarnThresholdMs": 1500,
-  "establishWarnMinIntervalMs": 5000,
-  "remoteErrorLogMinIntervalMs": 3000
-}
-```
-
-使用建议：
-
-- 先用“稳定优先”跑 1~2 天观察基线，再切“低延迟优先”做 AB 对比。
-- `remoteAutoSelectFamilyAttemptTimeoutMs` 建议调节范围 `150~400`，每次调整不超过 `50ms`。
-- `remoteConnectMaxInFlight` 建议从 `2048/3072/4096` 分档试验，观察 `remote_connect_overload_reject` 与 p95/p99 的平衡点。
-- `remoteConnectMaxInFlightPerHost` 建议先设为全局阈值的 `1/4` 到 `1/2`，观察 `remote_connect_overload_reject_by_host` 是否长期增长。
-- `remoteConnectOverloadWaitMs` 建议范围 `10~50`，数值越大越能缓冲毛刺，但会增加少量等待时延。
-- `remoteConnectOverloadMaxWaiters` 建议与 `remoteConnectMaxInFlightPerHost` 同量级或略大，避免等待队列过大。
-- `remoteDnsCacheTtlMs` 建议范围 `30000~120000`；域名变更频繁的环境可适当调短。
-- `remoteDnsNegativeCacheTtlMs` 建议范围 `1000~10000`；避免过长导致故障恢复后仍命中负缓存。
-- `remoteDnsCacheMaxEntries` 建议按目标域名规模设置，常见范围 `1024~8192`。
-- `remoteCircuitFailureThreshold` 建议范围 `5~12`；网络抖动大可略调高，目标故障明显可略调低。
-- `remoteCircuitOpenMs` 建议范围 `8000~30000`；若目标短时波动频繁，可适当调短以更快恢复探测。
-- `remoteConnectOverloadLogMinIntervalMs` 建议范围 `1000~5000`，高峰噪音大时优先调高它。
-- 若出现日志量激增，先提高 `establishWarnThresholdMs`，再考虑关闭 `slowEstablishEnabled`。
-
-#### `remoteConnectMaxInFlight` 调试流程
-
-1. 选择基线值：先用 `4096` 跑完整业务高峰时段（至少 30 分钟）。
-2. 记录指标：重点看 `remote_connect_overload_reject`、`remote_connect_inflight_peak`、`eventloop_p95_ms`、业务 p95/p99。
-3. 判断是否过高：若 `eventloop_p95_ms` 偏高且 `remote_connect_inflight_peak` 长时间贴近上限，说明并发建连压力过大。
-4. 判断是否过低：若 `remote_connect_overload_reject` 持续增长，但 `eventloop_p95_ms` 很低，说明上限可能设得过保守。
-5. 单步调整：每次仅调整一档（`4096 -> 3072 -> 2048` 或反向），每次变更后至少观察一个完整高峰周期。
-
-推荐判定口径：
-
-- 下调 `remoteConnectMaxInFlight`：`eventloop_p95_ms` 升高明显，且出现频繁慢建连或抖动。
-- 上调 `remoteConnectMaxInFlight`：`remote_connect_overload_reject` 持续升高且业务成功率受影响，但 `eventloop_p95_ms` 仍稳定。
-- 保持不变：`remote_connect_overload_reject` 低且稳定，`remote_connect_inflight_peak` 不长期贴边，业务 p95/p99 无恶化。
+说明：
+- 若运行环境 IPv6 不可达，建议保持 `remoteDnsPreferIPv4=true`，可显著降低 `ENETUNREACH`。
+- `h2SessionNoDelay` / `h2SessionKeepAlive` 在部分 Node 运行时可能受限，代码会自动禁用并继续运行。
 
 ### `client.json`
 
 - `socksListenHost` / `socksListenPort`：本地 SOCKS5 监听
-- `httpListen`：本地 HTTP 代理监听地址（例如 `127.0.0.1:7788`）
-- `httpListenBacklog`：HTTP 代理监听 backlog
-- `upstream.host` / `upstream.port`：远端 server 地址
-- `upstream.path`：上游路径（固定 `/proxy`）
-- `upstream.servername`：TLS SNI / 证书名称
-- `upstream.authToken`：上游鉴权 token（填某个用户 `authToken` 或命中 `authTokens` 列表的 token）
-- `upstream.caFile`：自定义 CA 文件路径（可选）
-- `upstream.rejectUnauthorized`：是否严格校验证书
-- `h2SessionPoolSize`：H2 会话池大小（默认 `1`，单用户低抖动优先）
-- `localAuth`：本地 SOCKS5 用户名密码认证
-- `logLevel`：日志等级
-- `maxBufferedBytes`：单连接写缓冲上限
-- `metricsIntervalMs`：指标日志输出周期
-- `socksListenBacklog`：SOCKS5 监听 backlog
-- `upstreamConnectTimeoutMs`：到上游连接超时
-- `streamResponseTimeoutMs`：stream 等待响应头超时
-- `streamIdleTimeoutMs`：stream 空闲超时（`0` 表示关闭）
-- `localSocketIdleTimeoutMs`：本地连接空闲超时（`0` 表示关闭）
-
-## 模式选择
-
-- 当前版本为 `proxy` 单一路径：
-  - 客户端配置：`upstream.path = "/proxy"`
-  - 服务端路由：`POST /proxy`
-  - 特点：经典单流模型，时延行为更可预测，维护成本更低。
+- `httpListen` / `httpListenBacklog`：本地 HTTP 代理监听
+- `upstream.host` / `upstream.port` / `upstream.path`：远端 server 地址与路径（固定 `/proxy`）
+- `upstream.serverName` / `upstream.authToken` / `upstream.rejectUnauthorized` / `upstream.caFile`：TLS 与鉴权参数
+- `localAuth.enabled` / `localAuth.username` / `localAuth.password`：本地 SOCKS5 认证
+- `logLevel` / `metricsIntervalMs`：日志与指标输出
+- `h2SessionPoolSize`：上游 H2 会话池大小
+- `upstreamConnectTimeoutMs` / `streamResponseTimeoutMs` / `streamIdleTimeoutMs` / `localSocketIdleTimeoutMs`：超时参数
+- `maxBufferedBytes` / `socksListenBacklog` / `localSocketKeepAliveInitialDelayMs`：连接与缓冲参数
 
 ## 日志与调试
 
@@ -311,6 +187,7 @@ LOG_LEVEL=WARN node bin/4px.js client -c config/client.json
 
 - 服务端在 `401` 响应头中返回 `x-auth-reason`（如 `expired_user` / `disabled_user`）。
 - Go GUI 会据此给出更明确提示（账号过期、账号禁用、token 无效），便于快速修复配置。
+- 通用故障排查入口：`docs/ops-quick-reference.md`。
 
 ## Linux 一键部署（systemd）
 
@@ -320,7 +197,6 @@ sudo bash ./deploy_systemd_server.sh
 ```
 
 可选环境变量：
-- `LOG_LEVEL`：默认 `WARN`
 - `USE_CLUSTER`：`0/1`，`1` 时启用 cluster 模式
 - `WORKERS`：worker 数量，默认 `2`
 - `LIMIT_NOFILE`：`ulimit -n`，默认 `100000`
@@ -329,8 +205,11 @@ sudo bash ./deploy_systemd_server.sh
 示例：
 
 ```bash
-sudo USE_CLUSTER=1 WORKERS=4 LOG_LEVEL=WARN APPLY_SYSCTL=1 bash ./deploy_systemd_server.sh
+sudo USE_CLUSTER=1 WORKERS=4 APPLY_SYSCTL=1 bash ./deploy_systemd_server.sh
 ```
+
+说明：
+- systemd 部署默认不再注入 `LOG_LEVEL` 环境变量，日志等级以 `server.json` 的 `logLevel` 为准。
 
 部署后服务名为 `4px`，常用命令：
 
@@ -368,6 +247,7 @@ http://127.0.0.1:6688/admin
 ```
 
 说明：
+- `server.users.json` 属于敏感运行时数据，默认应仅保留本地，不提交到仓库。
 - 首次访问会跳转到登录页：`/admin/login`，输入 `admin.token` 后进入管理页。
 - 登录成功后使用 Cookie 维持登录态；也支持请求头 `Authorization: Bearer <admin.token>` 调用 API。
 - 管理页已拆分为 Tab：用户管理、服务器资源、配置管理。

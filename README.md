@@ -1,9 +1,11 @@
 # 4px
 
 `4px` 是一个跨语言代理工具集，当前包含：
-- Node.js 数据面（`apps/node`）：提供 `server` 与 `client` 两个进程，协议为 `TLS + HTTP/2`。
+- Node.js 数据面（`apps/node`）：提供基于 HTTP/2 隧道的正向代理服务端（`server`）与本地入口（`client`），协议为 `TLS + HTTP/2`。
 - Go 客户端（`apps/go`）：兼容 Node `server` 协议，额外提供系统代理开关能力。
 - GUI 客户端（`apps/go/gui`）：基于 `Go + Wails` 的跨平台桌面版（开发中）。
+
+当前默认主路径：`/proxy`。`proxy-v2` 仅保留历史性能记录，不作为现行默认方案。
 
 适用场景：
 - 你有一台远端服务器，想通过单条 TLS 连接承载多路代理流量。
@@ -14,10 +16,16 @@
 
 - 双客户端实现：Node 与 Go 客户端都可对接同一 Node server。
 - 双代理入口：本地同时提供 `SOCKS5` 与 `HTTP` 代理监听。
-- 双模式转发：支持 `proxy`（经典单流）与 `proxy-v2`（mux 多路复用）。
-- 强一致配置：模式选择严格按配置生效，不做隐式协议降级。
+- 单路径转发：当前统一使用 `proxy`（经典单流）。
+- 配置一致性：主路径固定，避免多模式带来的行为分歧。
 - 可观测性：内置运行指标、日志等级、连接状态与 GUI 状态展示。
 - 可运维性：Node server 支持 systemd 部署、管理端与配置在线维护。
+
+## 术语统一
+
+- `server`：基于 HTTP/2 隧道的正向代理服务端（Node）
+- `client`：本地代理入口（Node 或 Go）
+- `主路径`：`/proxy`
 
 ## 总体架构
 
@@ -141,5 +149,6 @@ go run ./cmd/4px -c config/client.json sysproxy-status
 - Node 详细说明：`apps/node/README.md`
 - Go 详细说明：`apps/go/README.md`
 - GUI 详细说明：`apps/go/gui/README.md`
+- 运维速查：`docs/ops-quick-reference.md`
 - GUI 发布规范：`docs/release-gui.md`
 - 性能优化 TODO：`docs/performance-todo.md`
