@@ -31,6 +31,7 @@ const remoteConnectOverloadLogMinIntervalMs = Math.max(0, Number(cfg.remoteConne
 const remoteConnectOverloadWaitMs = Math.max(0, Math.floor(Number(cfg.remoteConnectOverloadWaitMs || 20)));
 const remoteConnectOverloadMaxWaiters = Math.max(0, Math.floor(Number(cfg.remoteConnectOverloadMaxWaiters || 1024)));
 const remoteDnsCacheEnabled = cfg.remoteDnsCacheEnabled !== false;
+const remoteDnsPreferIPv4 = cfg.remoteDnsPreferIPv4 !== false;
 const remoteDnsCacheTtlMs = Math.max(1000, Math.floor(Number(cfg.remoteDnsCacheTtlMs || 60000)));
 const remoteDnsNegativeCacheTtlMs = Math.max(200, Math.floor(Number(cfg.remoteDnsNegativeCacheTtlMs || 5000)));
 const remoteDnsCacheMaxEntries = Math.max(64, Math.floor(Number(cfg.remoteDnsCacheMaxEntries || 4096)));
@@ -160,10 +161,22 @@ function pruneDnsCacheIfNeeded() {
 
 function chooseDnsAddressFromEntry(entry) {
   if (!entry || !Array.isArray(entry.addresses) || entry.addresses.length === 0) return null;
-  const index = entry.nextIndex % entry.addresses.length;
-  const addr = entry.addresses[index];
-  entry.nextIndex = (entry.nextIndex + 1) % entry.addresses.length;
-  return addr;
+  const length = entry.addresses.length;
+  const startIndex = entry.nextIndex % length;
+  if (remoteDnsPreferIPv4) {
+    for (let i = 0; i < length; i += 1) {
+      const index = (startIndex + i) % length;
+      const candidate = entry.addresses[index];
+      if (candidate && candidate.family === 4) {
+        entry.nextIndex = (index + 1) % length;
+        stats.remoteDnsPreferIpv4PickTotal += 1;
+        return candidate;
+      }
+    }
+  }
+  const selected = entry.addresses[startIndex];
+  entry.nextIndex = (startIndex + 1) % length;
+  return selected;
 }
 
 async function resolveRemoteAddress(host) {
@@ -172,7 +185,7 @@ async function resolveRemoteAddress(host) {
     throw new Error('empty target host');
   }
   const ipFamily = net.isIP(normalizedHost);
-  if (ipFamily > 0 || !remoteDnsCacheEnabled) {
+  if (ipFamily > 0 || !remoteDnsCacheEnabled || remoteAutoSelectFamilyRuntimeEnabled) {
     return { host: normalizedHost, family: ipFamily > 0 ? ipFamily : undefined };
   }
   const now = Date.now();
@@ -403,6 +416,7 @@ const stats = {
   remoteDnsCacheMissTotal: 0,
   remoteDnsNegativeCacheHitTotal: 0,
   remoteDnsResolveErrorTotal: 0,
+  remoteDnsPreferIpv4PickTotal: 0,
   remoteCircuitRejectTotal: 0,
   remoteCircuitOpenTotal: 0,
   remoteIdleTimeoutTotal: 0,
@@ -415,7 +429,7 @@ loopDelay.enable();
 
 setInterval(() => {
   logger.info(
-    `metrics stream_total=${stats.streamTotal} active_streams=${stats.activeStreams} route_reject=${stats.routeRejectedTotal} auth_reject=${stats.authRejectedTotal} target_parse_fail=${stats.targetParseFailTotal} remote_ok=${stats.remoteConnectSuccessTotal} remote_error=${stats.remoteConnectErrorTotal} remote_connect_timeout=${stats.remoteConnectTimeoutTotal} remote_connect_overload_reject=${stats.remoteConnectOverloadRejectTotal} remote_connect_overload_reject_by_host=${stats.remoteConnectOverloadRejectByHostTotal} remote_connect_overload_wait_total=${stats.remoteConnectOverloadWaitTotal} remote_connect_overload_waiters=${remoteConnectOverloadWaiters} remote_dns_cache_hit=${stats.remoteDnsCacheHitTotal} remote_dns_cache_miss=${stats.remoteDnsCacheMissTotal} remote_dns_negative_cache_hit=${stats.remoteDnsNegativeCacheHitTotal} remote_dns_resolve_error=${stats.remoteDnsResolveErrorTotal} remote_dns_cache_size=${remoteDnsCache.size} remote_circuit_reject=${stats.remoteCircuitRejectTotal} remote_circuit_open_total=${stats.remoteCircuitOpenTotal} remote_circuit_targets=${remoteCircuitState.size} remote_connect_inflight=${remoteConnectInFlight} remote_connect_inflight_peak=${remoteConnectInFlightPeak} remote_connect_inflight_host_peak=${remoteConnectInFlightPerHostPeak} remote_idle_timeout=${stats.remoteIdleTimeoutTotal} buffer_overflow=${stats.bufferOverflowTotal} retryable_err=${stats.retryableErrorTotal} non_retryable_err=${stats.nonRetryableErrorTotal} eventloop_p95_ms=${(loopDelay.percentile(95) / 1e6).toFixed(2)}`
+    `metrics stream_total=${stats.streamTotal} active_streams=${stats.activeStreams} route_reject=${stats.routeRejectedTotal} auth_reject=${stats.authRejectedTotal} target_parse_fail=${stats.targetParseFailTotal} remote_ok=${stats.remoteConnectSuccessTotal} remote_error=${stats.remoteConnectErrorTotal} remote_connect_timeout=${stats.remoteConnectTimeoutTotal} remote_connect_overload_reject=${stats.remoteConnectOverloadRejectTotal} remote_connect_overload_reject_by_host=${stats.remoteConnectOverloadRejectByHostTotal} remote_connect_overload_wait_total=${stats.remoteConnectOverloadWaitTotal} remote_connect_overload_waiters=${remoteConnectOverloadWaiters} remote_dns_cache_hit=${stats.remoteDnsCacheHitTotal} remote_dns_cache_miss=${stats.remoteDnsCacheMissTotal} remote_dns_negative_cache_hit=${stats.remoteDnsNegativeCacheHitTotal} remote_dns_resolve_error=${stats.remoteDnsResolveErrorTotal} remote_dns_prefer_ipv4_pick=${stats.remoteDnsPreferIpv4PickTotal} remote_dns_cache_size=${remoteDnsCache.size} remote_circuit_reject=${stats.remoteCircuitRejectTotal} remote_circuit_open_total=${stats.remoteCircuitOpenTotal} remote_circuit_targets=${remoteCircuitState.size} remote_connect_inflight=${remoteConnectInFlight} remote_connect_inflight_peak=${remoteConnectInFlightPeak} remote_connect_inflight_host_peak=${remoteConnectInFlightPerHostPeak} remote_idle_timeout=${stats.remoteIdleTimeoutTotal} buffer_overflow=${stats.bufferOverflowTotal} retryable_err=${stats.retryableErrorTotal} non_retryable_err=${stats.nonRetryableErrorTotal} eventloop_p95_ms=${(loopDelay.percentile(95) / 1e6).toFixed(2)}`
   );
   if (remoteDnsCacheEnabled) {
     const hitDelta = Math.max(0, stats.remoteDnsCacheHitTotal - dnsSummaryLast.hit);
@@ -1105,7 +1119,7 @@ server.listen(cfg.listenPort, cfg.listenHost, listenBacklog, () => {
   logger.info(`remote connect overload wait ms=${remoteConnectOverloadWaitMs} max_waiters=${remoteConnectOverloadMaxWaiters}`);
   logger.info(`remote connect overload log min interval ms=${remoteConnectOverloadLogMinIntervalMs}`);
   logger.info(
-    `remote dns cache enabled=${remoteDnsCacheEnabled} ttl_ms=${remoteDnsCacheTtlMs} negative_ttl_ms=${remoteDnsNegativeCacheTtlMs} max_entries=${remoteDnsCacheMaxEntries}`
+    `remote dns cache enabled=${remoteDnsCacheEnabled} prefer_ipv4=${remoteDnsPreferIPv4} ttl_ms=${remoteDnsCacheTtlMs} negative_ttl_ms=${remoteDnsNegativeCacheTtlMs} max_entries=${remoteDnsCacheMaxEntries}`
   );
   logger.info(
     `remote circuit enabled=${remoteCircuitEnabled} failure_threshold=${remoteCircuitFailureThreshold} open_ms=${remoteCircuitOpenMs} log_min_interval_ms=${remoteCircuitLogMinIntervalMs} max_targets=${remoteCircuitMaxTargets}`

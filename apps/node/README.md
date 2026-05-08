@@ -120,6 +120,7 @@ node bin/4px.js client -c config/client.json
 - `remoteConnectOverloadMaxWaiters`：允许进入短暂等待的并发请求上限（默认 `1024`）
 - `remoteConnectOverloadLogMinIntervalMs`：过载拒绝日志最小输出间隔（毫秒，默认 `3000`；`0` 表示不限制）
 - `remoteDnsCacheEnabled`：是否启用轻量 DNS 缓存（默认 `true`）
+- `remoteDnsPreferIPv4`：DNS 缓存选址时是否优先 IPv4（默认 `true`，适合无 IPv6 出口环境）
 - `remoteDnsCacheTtlMs`：DNS 正缓存 TTL（毫秒，默认 `60000`）
 - `remoteDnsNegativeCacheTtlMs`：DNS 负缓存 TTL（毫秒，默认 `5000`）
 - `remoteDnsCacheMaxEntries`：DNS 缓存最大条目数（默认 `4096`）
@@ -141,12 +142,14 @@ node bin/4px.js client -c config/client.json
 - 突发削峰：`remoteConnectOverloadWaitMs` 在过载时先做一次短暂等待再判定是否拒绝，可减少瞬时毛刺导致的 `503`。
 - 等待队列保护：`remoteConnectOverloadMaxWaiters` 限制等待队列规模，避免过载时等待请求无限增长。
 - 轻量 DNS 缓存：为目标域名提供正缓存与负缓存，减少高并发下重复解析与失败重试放大。
+- IPv6 不可达规避：在 DNS 缓存路径下可优先选择 IPv4（`remoteDnsPreferIPv4=true`），减少无 IPv6 出口时的 `ENETUNREACH`。
 - 目标级短时熔断：对连续建连失败的 `host:port` 短时拒绝，减少对故障目标的无效重试与全局资源占用。
 - 过载日志限频：`remoteConnectOverloadLogMinIntervalMs` 用于限制 `503` 过载拒绝告警频率，避免高峰期日志风暴进一步放大抖动。
 - 入站连接低延迟：`h2SessionNoDelay=true` 可减少客户端到 server 的小包合并等待；弱网小包场景下通常更稳。
 - 入站会话保活：`h2SessionKeepAlive` 有助于减少长连接空闲后异常断连带来的重连抖动。
 - 兼容提示：部分 Node 运行时会限制 HTTP/2 socket 直接操作。若出现该限制，server 会自动禁用该优化并继续运行。
 - 兼容回退：若当前 Node 运行时不支持 `autoSelectFamily`，server 会自动回退到默认 `net.createConnection` 行为，不影响服务可用性。
+- 路径说明：当 `autoSelectFamily` 可用时，域名建连优先走 Node 内置地址选择；当不可用时，才使用 DNS 缓存选址策略。
 - 启动可观测：server 启动日志会打印 `remote auto select family enabled=... attempt_timeout_ms=...`，用于确认配置是否生效。
 - 建议搭配：生产环境建议和 `slowEstablishEnabled`、`establishWarnThresholdMs` 一起使用，持续观察 `connect_ms` 与 `ttfb_ms` 的变化。
 
@@ -167,6 +170,7 @@ node bin/4px.js client -c config/client.json
   "remoteConnectOverloadMaxWaiters": 768,
   "remoteConnectOverloadLogMinIntervalMs": 2000,
   "remoteDnsCacheEnabled": true,
+  "remoteDnsPreferIPv4": true,
   "remoteDnsCacheTtlMs": 45000,
   "remoteDnsNegativeCacheTtlMs": 3000,
   "remoteDnsCacheMaxEntries": 4096,
@@ -200,6 +204,7 @@ node bin/4px.js client -c config/client.json
   "remoteConnectOverloadMaxWaiters": 1024,
   "remoteConnectOverloadLogMinIntervalMs": 3000,
   "remoteDnsCacheEnabled": true,
+  "remoteDnsPreferIPv4": true,
   "remoteDnsCacheTtlMs": 60000,
   "remoteDnsNegativeCacheTtlMs": 5000,
   "remoteDnsCacheMaxEntries": 4096,

@@ -58,6 +58,7 @@
   "remoteConnectOverloadMaxWaiters": 1024,
   "remoteConnectOverloadLogMinIntervalMs": 3000,
   "remoteDnsCacheEnabled": true,
+  "remoteDnsPreferIPv4": true,
   "remoteDnsCacheTtlMs": 60000,
   "remoteDnsNegativeCacheTtlMs": 5000,
   "remoteDnsCacheMaxEntries": 4096,
