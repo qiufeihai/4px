@@ -24,6 +24,7 @@ const streamIdleTimeoutMs = Number.isFinite(Number(cfg.streamIdleTimeoutMs)) ? N
 const maxBufferedBytes = cfg.maxBufferedBytes || 4 * 1024 * 1024;
 const metricsIntervalMs = cfg.metricsIntervalMs || 30000;
 const listenBacklog = cfg.listenBacklog || 4096;
+const remoteConnectMaxInFlight = Math.max(1, Math.floor(Number(cfg.remoteConnectMaxInFlight || 4096)));
 const establishWarnThresholdMs = Math.max(200, Number(cfg.establishWarnThresholdMs || 1500));
 const establishWarnMinIntervalMs = Math.max(200, Number(cfg.establishWarnMinIntervalMs || 5000));
 const slowEstablishEnabled = cfg.slowEstablishEnabled === true;
@@ -58,6 +59,7 @@ const slowEstablishSummary = new Map();
 const remoteErrorLastLogAt = new Map();
 let remoteAutoSelectFamilyRuntimeEnabled = remoteAutoSelectFamily;
 let remoteAutoSelectFamilyFallbackWarned = false;
+let remoteConnectInFlight = 0;
 
 function createRemoteConnection(host, port) {
   if (!remoteAutoSelectFamilyRuntimeEnabled) {
@@ -149,6 +151,7 @@ const stats = {
   remoteConnectSuccessTotal: 0,
   remoteConnectErrorTotal: 0,
   remoteConnectTimeoutTotal: 0,
+  remoteConnectOverloadRejectTotal: 0,
   remoteIdleTimeoutTotal: 0,
   bufferOverflowTotal: 0,
   retryableErrorTotal: 0,
@@ -159,7 +162,7 @@ loopDelay.enable();
 
 setInterval(() => {
   logger.info(
-    `metrics stream_total=${stats.streamTotal} active_streams=${stats.activeStreams} route_reject=${stats.routeRejectedTotal} auth_reject=${stats.authRejectedTotal} target_parse_fail=${stats.targetParseFailTotal} remote_ok=${stats.remoteConnectSuccessTotal} remote_error=${stats.remoteConnectErrorTotal} remote_connect_timeout=${stats.remoteConnectTimeoutTotal} remote_idle_timeout=${stats.remoteIdleTimeoutTotal} buffer_overflow=${stats.bufferOverflowTotal} retryable_err=${stats.retryableErrorTotal} non_retryable_err=${stats.nonRetryableErrorTotal} eventloop_p95_ms=${(loopDelay.percentile(95) / 1e6).toFixed(2)}`
+    `metrics stream_total=${stats.streamTotal} active_streams=${stats.activeStreams} route_reject=${stats.routeRejectedTotal} auth_reject=${stats.authRejectedTotal} target_parse_fail=${stats.targetParseFailTotal} remote_ok=${stats.remoteConnectSuccessTotal} remote_error=${stats.remoteConnectErrorTotal} remote_connect_timeout=${stats.remoteConnectTimeoutTotal} remote_connect_overload_reject=${stats.remoteConnectOverloadRejectTotal} remote_connect_inflight=${remoteConnectInFlight} remote_idle_timeout=${stats.remoteIdleTimeoutTotal} buffer_overflow=${stats.bufferOverflowTotal} retryable_err=${stats.retryableErrorTotal} non_retryable_err=${stats.nonRetryableErrorTotal} eventloop_p95_ms=${(loopDelay.percentile(95) / 1e6).toFixed(2)}`
   );
   loopDelay.reset();
 }, metricsIntervalMs).unref();
@@ -513,6 +516,28 @@ server.on('stream', (stream, headers) => {
     if (logger.enabled('INFO')) {
       logger.info(`stream accepted, trace_id=${traceId}, peer=${remotePeer}, stream=${streamId}, user=${authUser.username}, target=${host}:${port}`);
     }
+    if (remoteConnectInFlight >= remoteConnectMaxInFlight) {
+      stats.remoteConnectOverloadRejectTotal += 1;
+      markServerError('retryable');
+      logger.warn(
+        `remote connect overload reject, trace_id=${traceId}, stream=${streamId}, target=${host}:${port}, inflight=${remoteConnectInFlight}, max_inflight=${remoteConnectMaxInFlight}, err_class=retryable`
+      );
+      stream.respond({ ':status': 503 });
+      stream.end();
+      markUserConnectionClose(authUser);
+      releaseLeaseOnce();
+      if (stats.activeStreams > 0) stats.activeStreams -= 1;
+      return;
+    }
+    remoteConnectInFlight += 1;
+    let connectInflightReleased = false;
+    const releaseConnectInflight = () => {
+      if (connectInflightReleased) return;
+      connectInflightReleased = true;
+      if (remoteConnectInFlight > 0) {
+        remoteConnectInFlight -= 1;
+      }
+    };
     const remote = createRemoteConnection(host, port);
     remote.setNoDelay(true);
     remote.setKeepAlive(true, remoteKeepAliveInitialDelayMs);
@@ -526,6 +551,7 @@ server.on('stream', (stream, headers) => {
 
     let responded = false;
     remote.once('connect', () => {
+      releaseConnectInflight();
       clearTimeout(connectTimeoutTimer);
       responded = true;
       remoteConnectedAtMs = Date.now();
@@ -613,6 +639,7 @@ server.on('stream', (stream, headers) => {
     });
     stream.on('error', closeBoth);
     remote.on('error', () => {
+      releaseConnectInflight();
       stats.remoteConnectErrorTotal += 1;
       markServerError('retryable');
       if (shouldEmitRemoteErrorLog(host, port)) {
@@ -631,6 +658,7 @@ server.on('stream', (stream, headers) => {
       if (!remote.destroyed) remote.destroy();
     });
     remote.on('close', () => {
+      releaseConnectInflight();
       if (logger.enabled('INFO')) {
         logger.info(`remote closed, trace_id=${traceId}, stream=${streamId}, target=${host}:${port}`);
       }
@@ -659,6 +687,7 @@ server.listen(cfg.listenPort, cfg.listenHost, listenBacklog, () => {
   logger.info(`user runtime tracking enabled=${userRuntimeTrackingEnabled}`);
   logger.info(`slow establish enabled=${slowEstablishEnabled} threshold_ms=${establishWarnThresholdMs} min_interval_ms=${establishWarnMinIntervalMs} top_n=${slowEstablishTopN}`);
   logger.info(`remote error log min interval ms=${remoteErrorLogMinIntervalMs}`);
+  logger.info(`remote connect max in flight=${remoteConnectMaxInFlight}`);
   logger.info(
     `remote auto select family enabled=${remoteAutoSelectFamily} attempt_timeout_ms=${remoteAutoSelectFamilyAttemptTimeoutMs}`
   );

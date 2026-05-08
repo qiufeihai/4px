@@ -112,6 +112,7 @@ node bin/4px.js client -c config/client.json
 - `remoteConnectTimeoutMs`：到目标地址连接超时
 - `remoteAutoSelectFamily`：是否启用 Node 的双栈自动建连（Happy Eyeballs 等价能力，默认 `true`）
 - `remoteAutoSelectFamilyAttemptTimeoutMs`：双栈竞速延迟（毫秒，默认 `300`）
+- `remoteConnectMaxInFlight`：server 同时进行中的出站建连上限（默认 `4096`；超过会快速返回 `503`，用于抑制建连风暴）
 - `remoteIdleTimeoutMs`：目标连接空闲超时（`0` 表示关闭）
 - `remoteKeepAliveInitialDelayMs`：目标连接 KeepAlive 初始延迟
 - `streamIdleTimeoutMs`：H2 stream 空闲超时（`0` 表示关闭）
@@ -120,6 +121,7 @@ node bin/4px.js client -c config/client.json
 
 - 双栈自动建连：开启 `remoteAutoSelectFamily=true` 后，server 出站建连会自动在 IPv4/IPv6 间做快速择优，降低 DNS/网络波动时的 `connect_ms` 尾延迟。
 - 竞速延迟控制：`remoteAutoSelectFamilyAttemptTimeoutMs` 控制双栈竞速间隔，默认 `300ms`。网络较稳可适当调低（如 `150~250`），网络复杂建议保持默认。
+- 建连风暴保护：`remoteConnectMaxInFlight` 用于限制同时进行中的目标建连数；超阈值请求会快速返回 `503`，避免 event loop 被大量慢建连拖垮。
 - 兼容回退：若当前 Node 运行时不支持 `autoSelectFamily`，server 会自动回退到默认 `net.createConnection` 行为，不影响服务可用性。
 - 启动可观测：server 启动日志会打印 `remote auto select family enabled=... attempt_timeout_ms=...`，用于确认配置是否生效。
 - 建议搭配：生产环境建议和 `slowEstablishEnabled`、`establishWarnThresholdMs` 一起使用，持续观察 `connect_ms` 与 `ttfb_ms` 的变化。
@@ -132,6 +134,7 @@ node bin/4px.js client -c config/client.json
 {
   "remoteAutoSelectFamily": true,
   "remoteAutoSelectFamilyAttemptTimeoutMs": 200,
+  "remoteConnectMaxInFlight": 3072,
   "remoteConnectTimeoutMs": 12000,
   "remoteIdleTimeoutMs": 240000,
   "streamIdleTimeoutMs": 240000,
@@ -148,6 +151,7 @@ node bin/4px.js client -c config/client.json
 {
   "remoteAutoSelectFamily": true,
   "remoteAutoSelectFamilyAttemptTimeoutMs": 300,
+  "remoteConnectMaxInFlight": 4096,
   "remoteConnectTimeoutMs": 15000,
   "remoteIdleTimeoutMs": 300000,
   "streamIdleTimeoutMs": 300000,
@@ -162,6 +166,7 @@ node bin/4px.js client -c config/client.json
 
 - 先用“稳定优先”跑 1~2 天观察基线，再切“低延迟优先”做 AB 对比。
 - `remoteAutoSelectFamilyAttemptTimeoutMs` 建议调节范围 `150~400`，每次调整不超过 `50ms`。
+- `remoteConnectMaxInFlight` 建议从 `2048/3072/4096` 分档试验，观察 `remote_connect_overload_reject` 与 p95/p99 的平衡点。
 - 若出现日志量激增，先提高 `establishWarnThresholdMs`，再考虑关闭 `slowEstablishEnabled`。
 
 ### `client.json`

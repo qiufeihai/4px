@@ -49,6 +49,7 @@
   "remoteConnectTimeoutMs": 15000,
   "remoteAutoSelectFamily": true,
   "remoteAutoSelectFamilyAttemptTimeoutMs": 300,
+  "remoteConnectMaxInFlight": 4096,
   "remoteIdleTimeoutMs": 300000,
   "remoteKeepAliveInitialDelayMs": 30000,
   "streamIdleTimeoutMs": 300000,
