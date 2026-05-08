@@ -29,6 +29,11 @@ const remoteConnectMaxInFlightPerHost = Math.max(0, Math.floor(Number(cfg.remote
 const remoteConnectOverloadLogMinIntervalMs = Math.max(0, Number(cfg.remoteConnectOverloadLogMinIntervalMs || 3000));
 const remoteConnectOverloadWaitMs = Math.max(0, Math.floor(Number(cfg.remoteConnectOverloadWaitMs || 20)));
 const remoteConnectOverloadMaxWaiters = Math.max(0, Math.floor(Number(cfg.remoteConnectOverloadMaxWaiters || 1024)));
+const remoteCircuitEnabled = cfg.remoteCircuitEnabled !== false;
+const remoteCircuitFailureThreshold = Math.max(1, Math.floor(Number(cfg.remoteCircuitFailureThreshold || 8)));
+const remoteCircuitOpenMs = Math.max(1000, Math.floor(Number(cfg.remoteCircuitOpenMs || 15000)));
+const remoteCircuitLogMinIntervalMs = Math.max(0, Math.floor(Number(cfg.remoteCircuitLogMinIntervalMs || 3000)));
+const remoteCircuitMaxTargets = Math.max(64, Math.floor(Number(cfg.remoteCircuitMaxTargets || 4096)));
 const establishWarnThresholdMs = Math.max(200, Number(cfg.establishWarnThresholdMs || 1500));
 const establishWarnMinIntervalMs = Math.max(200, Number(cfg.establishWarnMinIntervalMs || 5000));
 const slowEstablishEnabled = cfg.slowEstablishEnabled === true;
@@ -75,6 +80,8 @@ let remoteConnectInFlightPerHostPeak = 0;
 let remoteConnectOverloadLastLogAt = 0;
 let remoteConnectOverloadWaiters = 0;
 const remoteConnectHostInFlight = new Map();
+const remoteCircuitState = new Map();
+const remoteCircuitLastLogAt = new Map();
 
 function shouldEmitOverloadLog() {
   if (remoteConnectOverloadLogMinIntervalMs <= 0) return true;
@@ -113,6 +120,77 @@ function createRemoteConnection(host, port) {
 
 function targetKey(host, port) {
   return `${String(host || '').trim().toLowerCase()}:${Number(port || 0)}`;
+}
+
+function shouldEmitCircuitLog(key) {
+  if (remoteCircuitLogMinIntervalMs <= 0) return true;
+  const now = Date.now();
+  const last = Number(remoteCircuitLastLogAt.get(key) || 0);
+  if (now - last < remoteCircuitLogMinIntervalMs) {
+    return false;
+  }
+  remoteCircuitLastLogAt.set(key, now);
+  if (remoteCircuitLastLogAt.size > 8192) {
+    remoteCircuitLastLogAt.clear();
+  }
+  return true;
+}
+
+function getOrCreateCircuitState(key) {
+  if (!remoteCircuitState.has(key)) {
+    remoteCircuitState.set(key, {
+      failures: 0,
+      openUntilMs: 0
+    });
+  }
+  if (remoteCircuitState.size > remoteCircuitMaxTargets) {
+    const firstKey = remoteCircuitState.keys().next().value;
+    if (firstKey) {
+      remoteCircuitState.delete(firstKey);
+    }
+  }
+  return remoteCircuitState.get(key);
+}
+
+function isCircuitOpen(key, nowMs) {
+  if (!remoteCircuitEnabled) return false;
+  const state = remoteCircuitState.get(key);
+  if (!state) return false;
+  const now = Number.isFinite(Number(nowMs)) ? Number(nowMs) : Date.now();
+  if (state.openUntilMs > now) {
+    return true;
+  }
+  if (state.openUntilMs > 0 && state.openUntilMs <= now) {
+    state.openUntilMs = 0;
+    state.failures = 0;
+  }
+  return false;
+}
+
+function markCircuitSuccess(key) {
+  if (!remoteCircuitEnabled) return;
+  const state = remoteCircuitState.get(key);
+  if (!state) return;
+  if (state.failures === 0 && state.openUntilMs === 0) return;
+  state.failures = 0;
+  state.openUntilMs = 0;
+}
+
+function markCircuitFailure(key, reason) {
+  if (!remoteCircuitEnabled) return;
+  const state = getOrCreateCircuitState(key);
+  state.failures += 1;
+  if (state.failures < remoteCircuitFailureThreshold) {
+    return;
+  }
+  state.failures = 0;
+  state.openUntilMs = Date.now() + remoteCircuitOpenMs;
+  stats.remoteCircuitOpenTotal += 1;
+  if (shouldEmitCircuitLog(key)) {
+    logger.warn(
+      `remote circuit opened, target=${key}, open_ms=${remoteCircuitOpenMs}, threshold=${remoteCircuitFailureThreshold}, reason=${reason}`
+    );
+  }
 }
 
 function acquireHostConnectSlot(key) {
@@ -207,6 +285,8 @@ const stats = {
   remoteConnectOverloadRejectTotal: 0,
   remoteConnectOverloadRejectByHostTotal: 0,
   remoteConnectOverloadWaitTotal: 0,
+  remoteCircuitRejectTotal: 0,
+  remoteCircuitOpenTotal: 0,
   remoteIdleTimeoutTotal: 0,
   bufferOverflowTotal: 0,
   retryableErrorTotal: 0,
@@ -217,7 +297,7 @@ loopDelay.enable();
 
 setInterval(() => {
   logger.info(
-    `metrics stream_total=${stats.streamTotal} active_streams=${stats.activeStreams} route_reject=${stats.routeRejectedTotal} auth_reject=${stats.authRejectedTotal} target_parse_fail=${stats.targetParseFailTotal} remote_ok=${stats.remoteConnectSuccessTotal} remote_error=${stats.remoteConnectErrorTotal} remote_connect_timeout=${stats.remoteConnectTimeoutTotal} remote_connect_overload_reject=${stats.remoteConnectOverloadRejectTotal} remote_connect_overload_reject_by_host=${stats.remoteConnectOverloadRejectByHostTotal} remote_connect_overload_wait_total=${stats.remoteConnectOverloadWaitTotal} remote_connect_overload_waiters=${remoteConnectOverloadWaiters} remote_connect_inflight=${remoteConnectInFlight} remote_connect_inflight_peak=${remoteConnectInFlightPeak} remote_connect_inflight_host_peak=${remoteConnectInFlightPerHostPeak} remote_idle_timeout=${stats.remoteIdleTimeoutTotal} buffer_overflow=${stats.bufferOverflowTotal} retryable_err=${stats.retryableErrorTotal} non_retryable_err=${stats.nonRetryableErrorTotal} eventloop_p95_ms=${(loopDelay.percentile(95) / 1e6).toFixed(2)}`
+    `metrics stream_total=${stats.streamTotal} active_streams=${stats.activeStreams} route_reject=${stats.routeRejectedTotal} auth_reject=${stats.authRejectedTotal} target_parse_fail=${stats.targetParseFailTotal} remote_ok=${stats.remoteConnectSuccessTotal} remote_error=${stats.remoteConnectErrorTotal} remote_connect_timeout=${stats.remoteConnectTimeoutTotal} remote_connect_overload_reject=${stats.remoteConnectOverloadRejectTotal} remote_connect_overload_reject_by_host=${stats.remoteConnectOverloadRejectByHostTotal} remote_connect_overload_wait_total=${stats.remoteConnectOverloadWaitTotal} remote_connect_overload_waiters=${remoteConnectOverloadWaiters} remote_circuit_reject=${stats.remoteCircuitRejectTotal} remote_circuit_open_total=${stats.remoteCircuitOpenTotal} remote_circuit_targets=${remoteCircuitState.size} remote_connect_inflight=${remoteConnectInFlight} remote_connect_inflight_peak=${remoteConnectInFlightPeak} remote_connect_inflight_host_peak=${remoteConnectInFlightPerHostPeak} remote_idle_timeout=${stats.remoteIdleTimeoutTotal} buffer_overflow=${stats.bufferOverflowTotal} retryable_err=${stats.retryableErrorTotal} non_retryable_err=${stats.nonRetryableErrorTotal} eventloop_p95_ms=${(loopDelay.percentile(95) / 1e6).toFixed(2)}`
   );
   remoteConnectInFlightPeak = remoteConnectInFlight;
   if (remoteConnectMaxInFlightPerHost > 0) {
@@ -587,6 +667,23 @@ server.on('stream', async (stream, headers) => {
       logger.info(`stream accepted, trace_id=${traceId}, peer=${remotePeer}, stream=${streamId}, user=${authUser.username}, target=${host}:${port}`);
     }
     const connectTargetKey = targetKey(host, port);
+    if (isCircuitOpen(connectTargetKey, Date.now())) {
+      stats.remoteCircuitRejectTotal += 1;
+      markServerError('retryable');
+      if (shouldEmitCircuitLog(connectTargetKey)) {
+        const state = remoteCircuitState.get(connectTargetKey);
+        const remainMs = Math.max(0, Number(state && state.openUntilMs ? state.openUntilMs - Date.now() : 0));
+        logger.warn(
+          `remote circuit reject, trace_id=${traceId}, stream=${streamId}, target=${host}:${port}, remain_ms=${remainMs}, err_class=retryable`
+        );
+      }
+      stream.respond({ ':status': 503 });
+      stream.end();
+      markUserConnectionClose(authUser);
+      releaseLeaseOnce();
+      if (stats.activeStreams > 0) stats.activeStreams -= 1;
+      return;
+    }
     const hasGlobalConnectSlot = () => remoteConnectInFlight < remoteConnectMaxInFlight;
     const hasHostConnectSlot = () => {
       if (remoteConnectMaxInFlightPerHost <= 0) return true;
@@ -661,6 +758,7 @@ server.on('stream', async (stream, headers) => {
     const connectTimeoutTimer = setTimeout(() => {
       stats.remoteConnectTimeoutTotal += 1;
       markServerError('retryable');
+      markCircuitFailure(connectTargetKey, 'connect_timeout');
       logger.warn(`remote connect timeout, trace_id=${traceId}, stream=${streamId}, target=${host}:${port}, mode=${reqPath}, err_class=retryable`);
       remote.destroy(new Error('connect timeout'));
     }, remoteConnectTimeoutMs);
@@ -670,6 +768,7 @@ server.on('stream', async (stream, headers) => {
       releaseConnectInflight();
       clearTimeout(connectTimeoutTimer);
       responded = true;
+      markCircuitSuccess(connectTargetKey);
       remoteConnectedAtMs = Date.now();
       stats.remoteConnectSuccessTotal += 1;
       if (logger.enabled('INFO')) {
@@ -758,6 +857,9 @@ server.on('stream', async (stream, headers) => {
       releaseConnectInflight();
       stats.remoteConnectErrorTotal += 1;
       markServerError('retryable');
+      if (!responded) {
+        markCircuitFailure(connectTargetKey, 'connect_error');
+      }
       if (shouldEmitRemoteErrorLog(host, port)) {
         logger.error(`remote connection error, trace_id=${traceId}, stream=${streamId}, target=${host}:${port}, mode=${reqPath}, err_class=retryable`);
       }
@@ -810,6 +912,9 @@ server.listen(cfg.listenPort, cfg.listenHost, listenBacklog, () => {
   logger.info(`remote connect max in flight per host=${remoteConnectMaxInFlightPerHost}`);
   logger.info(`remote connect overload wait ms=${remoteConnectOverloadWaitMs} max_waiters=${remoteConnectOverloadMaxWaiters}`);
   logger.info(`remote connect overload log min interval ms=${remoteConnectOverloadLogMinIntervalMs}`);
+  logger.info(
+    `remote circuit enabled=${remoteCircuitEnabled} failure_threshold=${remoteCircuitFailureThreshold} open_ms=${remoteCircuitOpenMs} log_min_interval_ms=${remoteCircuitLogMinIntervalMs} max_targets=${remoteCircuitMaxTargets}`
+  );
   logger.info(
     `remote auto select family enabled=${remoteAutoSelectFamily} attempt_timeout_ms=${remoteAutoSelectFamilyAttemptTimeoutMs}`
   );

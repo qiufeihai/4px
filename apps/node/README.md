@@ -119,6 +119,11 @@ node bin/4px.js client -c config/client.json
 - `remoteConnectOverloadWaitMs`：过载时短暂等待可用建连槽的时长（毫秒，默认 `20`）
 - `remoteConnectOverloadMaxWaiters`：允许进入短暂等待的并发请求上限（默认 `1024`）
 - `remoteConnectOverloadLogMinIntervalMs`：过载拒绝日志最小输出间隔（毫秒，默认 `3000`；`0` 表示不限制）
+- `remoteCircuitEnabled`：是否启用目标级短时熔断（默认 `true`）
+- `remoteCircuitFailureThreshold`：单目标连续建连失败触发熔断的阈值（默认 `8`）
+- `remoteCircuitOpenMs`：熔断打开后拒绝时长（毫秒，默认 `15000`）
+- `remoteCircuitLogMinIntervalMs`：熔断相关日志最小输出间隔（毫秒，默认 `3000`）
+- `remoteCircuitMaxTargets`：熔断状态表最大目标数量（默认 `4096`）
 - `remoteIdleTimeoutMs`：目标连接空闲超时（`0` 表示关闭）
 - `remoteKeepAliveInitialDelayMs`：目标连接 KeepAlive 初始延迟
 - `streamIdleTimeoutMs`：H2 stream 空闲超时（`0` 表示关闭）
@@ -131,6 +136,7 @@ node bin/4px.js client -c config/client.json
 - 热点目标隔离：`remoteConnectMaxInFlightPerHost` 用于限制单个目标站点占用过多建连额度，避免“一个热点拖垮全部目标”。
 - 突发削峰：`remoteConnectOverloadWaitMs` 在过载时先做一次短暂等待再判定是否拒绝，可减少瞬时毛刺导致的 `503`。
 - 等待队列保护：`remoteConnectOverloadMaxWaiters` 限制等待队列规模，避免过载时等待请求无限增长。
+- 目标级短时熔断：对连续建连失败的 `host:port` 短时拒绝，减少对故障目标的无效重试与全局资源占用。
 - 过载日志限频：`remoteConnectOverloadLogMinIntervalMs` 用于限制 `503` 过载拒绝告警频率，避免高峰期日志风暴进一步放大抖动。
 - 入站连接低延迟：`h2SessionNoDelay=true` 可减少客户端到 server 的小包合并等待；弱网小包场景下通常更稳。
 - 入站会话保活：`h2SessionKeepAlive` 有助于减少长连接空闲后异常断连带来的重连抖动。
@@ -154,6 +160,11 @@ node bin/4px.js client -c config/client.json
   "remoteConnectOverloadWaitMs": 20,
   "remoteConnectOverloadMaxWaiters": 768,
   "remoteConnectOverloadLogMinIntervalMs": 2000,
+  "remoteCircuitEnabled": true,
+  "remoteCircuitFailureThreshold": 6,
+  "remoteCircuitOpenMs": 12000,
+  "remoteCircuitLogMinIntervalMs": 2000,
+  "remoteCircuitMaxTargets": 4096,
   "remoteConnectTimeoutMs": 12000,
   "remoteIdleTimeoutMs": 240000,
   "streamIdleTimeoutMs": 240000,
@@ -178,6 +189,11 @@ node bin/4px.js client -c config/client.json
   "remoteConnectOverloadWaitMs": 20,
   "remoteConnectOverloadMaxWaiters": 1024,
   "remoteConnectOverloadLogMinIntervalMs": 3000,
+  "remoteCircuitEnabled": true,
+  "remoteCircuitFailureThreshold": 8,
+  "remoteCircuitOpenMs": 15000,
+  "remoteCircuitLogMinIntervalMs": 3000,
+  "remoteCircuitMaxTargets": 4096,
   "remoteConnectTimeoutMs": 15000,
   "remoteIdleTimeoutMs": 300000,
   "streamIdleTimeoutMs": 300000,
@@ -196,6 +212,8 @@ node bin/4px.js client -c config/client.json
 - `remoteConnectMaxInFlightPerHost` 建议先设为全局阈值的 `1/4` 到 `1/2`，观察 `remote_connect_overload_reject_by_host` 是否长期增长。
 - `remoteConnectOverloadWaitMs` 建议范围 `10~50`，数值越大越能缓冲毛刺，但会增加少量等待时延。
 - `remoteConnectOverloadMaxWaiters` 建议与 `remoteConnectMaxInFlightPerHost` 同量级或略大，避免等待队列过大。
+- `remoteCircuitFailureThreshold` 建议范围 `5~12`；网络抖动大可略调高，目标故障明显可略调低。
+- `remoteCircuitOpenMs` 建议范围 `8000~30000`；若目标短时波动频繁，可适当调短以更快恢复探测。
 - `remoteConnectOverloadLogMinIntervalMs` 建议范围 `1000~5000`，高峰噪音大时优先调高它。
 - 若出现日志量激增，先提高 `establishWarnThresholdMs`，再考虑关闭 `slowEstablishEnabled`。
 
