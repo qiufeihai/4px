@@ -145,6 +145,7 @@ node bin/4px.js client -c config/client.json
 - 过载日志限频：`remoteConnectOverloadLogMinIntervalMs` 用于限制 `503` 过载拒绝告警频率，避免高峰期日志风暴进一步放大抖动。
 - 入站连接低延迟：`h2SessionNoDelay=true` 可减少客户端到 server 的小包合并等待；弱网小包场景下通常更稳。
 - 入站会话保活：`h2SessionKeepAlive` 有助于减少长连接空闲后异常断连带来的重连抖动。
+- 兼容提示：部分 Node 运行时会限制 HTTP/2 socket 直接操作。若出现该限制，server 会自动禁用该优化并继续运行。
 - 兼容回退：若当前 Node 运行时不支持 `autoSelectFamily`，server 会自动回退到默认 `net.createConnection` 行为，不影响服务可用性。
 - 启动可观测：server 启动日志会打印 `remote auto select family enabled=... attempt_timeout_ms=...`，用于确认配置是否生效。
 - 建议搭配：生产环境建议和 `slowEstablishEnabled`、`establishWarnThresholdMs` 一起使用，持续观察 `connect_ms` 与 `ttfb_ms` 的变化。

@@ -94,6 +94,8 @@ const dnsSummaryLast = {
   negativeHit: 0,
   resolveError: 0
 };
+let h2SessionSocketTuneSupported = true;
+let h2SessionSocketTuneWarned = false;
 
 function shouldEmitOverloadLog() {
   if (remoteConnectOverloadLogMinIntervalMs <= 0) return true;
@@ -670,13 +672,33 @@ const server = http2.createSecureServer({
 });
 
 server.on('session', (session) => {
-  const socket = session && session.socket;
-  if (!socket) return;
-  if (h2SessionNoDelay) {
-    socket.setNoDelay(true);
-  }
-  if (h2SessionKeepAlive) {
-    socket.setKeepAlive(true, h2SessionKeepAliveInitialDelayMs);
+  if (!h2SessionSocketTuneSupported) return;
+  try {
+    const socket = session && session.socket;
+    if (!socket) return;
+    if (h2SessionNoDelay) {
+      socket.setNoDelay(true);
+    }
+    if (h2SessionKeepAlive) {
+      socket.setKeepAlive(true, h2SessionKeepAliveInitialDelayMs);
+    }
+  } catch (err) {
+    const code = String(err && err.code ? err.code : '');
+    if (code === 'ERR_HTTP2_NO_SOCKET_MANIPULATION') {
+      h2SessionSocketTuneSupported = false;
+      if (!h2SessionSocketTuneWarned) {
+        h2SessionSocketTuneWarned = true;
+        logger.warn(
+          'h2 session socket tuning disabled: current Node runtime does not allow HTTP/2 socket manipulation'
+        );
+      }
+      return;
+    }
+    if (!h2SessionSocketTuneWarned) {
+      h2SessionSocketTuneWarned = true;
+      logger.warn(`h2 session socket tuning failed and disabled: ${String((err && (err.code || err.message)) || err)}`);
+    }
+    h2SessionSocketTuneSupported = false;
   }
 });
 
@@ -1057,7 +1079,7 @@ server.listen(cfg.listenPort, cfg.listenHost, listenBacklog, () => {
     `h2 settings header_table_size=${h2HeaderTableSize} initial_window_size=${h2InitialWindowSize} max_concurrent_streams=${h2MaxConcurrentStreams} max_frame_size=${h2MaxFrameSize} max_header_list_size=${h2MaxHeaderListSize}`
   );
   logger.info(
-    `h2 session socket no_delay=${h2SessionNoDelay} keep_alive=${h2SessionKeepAlive} keep_alive_initial_delay_ms=${h2SessionKeepAliveInitialDelayMs}`
+    `h2 session socket no_delay=${h2SessionNoDelay} keep_alive=${h2SessionKeepAlive} keep_alive_initial_delay_ms=${h2SessionKeepAliveInitialDelayMs} supported=${h2SessionSocketTuneSupported}`
   );
   logger.info('proxy routes v1=/proxy');
   logger.info(`user runtime tracking enabled=${userRuntimeTrackingEnabled}`);
