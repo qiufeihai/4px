@@ -178,38 +178,38 @@
     <section class="card">
       <div class="grid">
         <div>
-          <label for="upstreamHost">upstream_host (IP)</label>
-          <input id="upstreamHost" />
+          <label for="upstreamHost">上游地址（upstream_host）</label>
+          <input id="upstreamHost" placeholder="示例：1.2.3.4" />
         </div>
         <div>
-          <label for="upstreamPort">upstream_port</label>
-          <input id="upstreamPort" type="number" />
+          <label for="upstreamPort">上游端口（upstream_port）</label>
+          <input id="upstreamPort" type="number" placeholder="示例：6666" />
         </div>
         <div>
-          <label for="serverName">server_name (域名)</label>
-          <input id="serverName" />
+          <label for="serverName">服务器域名（server_name）</label>
+          <input id="serverName" placeholder="示例：example.com" />
         </div>
         <div>
-          <label for="authToken">auth_token</label>
-          <input id="authToken" />
+          <label for="authToken">鉴权令牌（auth_token）</label>
+          <input id="authToken" placeholder="粘贴服务端分配的 token" />
         </div>
         <div>
-          <label for="socksListen">socks_listen</label>
-          <input id="socksListen" />
+          <label for="socksListen">SOCKS5 监听（socks_listen）</label>
+          <input id="socksListen" placeholder="示例：127.0.0.1:7777" />
         </div>
         <div>
-          <label for="httpListen">http_listen</label>
-          <input id="httpListen" />
+          <label for="httpListen">HTTP 监听（http_listen）</label>
+          <input id="httpListen" placeholder="示例：127.0.0.1:7788" />
         </div>
         <div>
-          <label for="rejectUnauthorized">reject_unauthorized</label>
+          <label for="rejectUnauthorized">严格校验证书（reject_unauthorized）</label>
           <select id="rejectUnauthorized">
-            <option value="true">true</option>
-            <option value="false">false</option>
+            <option value="true">是（推荐）</option>
+            <option value="false">否（允许自签证书）</option>
           </select>
         </div>
         <div>
-          <label for="logLevel">log_level</label>
+          <label for="logLevel">日志级别（log_level）</label>
           <select id="logLevel">
             <option>DEBUG</option>
             <option selected>INFO</option>
@@ -225,8 +225,8 @@
       <div class="row" style="margin-top: 10px;">
         <button id="btnLoad">读取配置</button>
         <button id="btnSave">保存配置</button>
-        <button id="btnStart">启动 Client</button>
-        <button id="btnStop" class="danger">停止 Client</button>
+        <button id="btnStart">启动客户端</button>
+        <button id="btnStop" class="danger">停止客户端</button>
         <label class="inline-check" for="stopAutoDisableProxy">
           <input id="stopAutoDisableProxy" type="checkbox" checked />
           停止后自动关闭系统代理
@@ -241,19 +241,19 @@
     <section class="card">
       <h2 class="title">运行状态与日志</h2>
       <div class="status-row">
-        <div class="status-item" id="statusRunning">running: -</div>
-        <div class="status-item" id="statusPid">pid: -</div>
-        <div class="status-item" id="statusConfig">config: -</div>
-        <div class="status-item" id="statusStarted">started: -</div>
-        <div class="status-item" id="statusExited">exited: -</div>
-        <div class="status-item" id="statusProxy">system proxy: -</div>
+        <div class="status-item" id="statusRunning">运行状态: -</div>
+        <div class="status-item" id="statusPid">进程 PID: -</div>
+        <div class="status-item" id="statusConfig">配置路径: -</div>
+        <div class="status-item" id="statusStarted">启动时间: -</div>
+        <div class="status-item" id="statusExited">退出时间: -</div>
+        <div class="status-item" id="statusProxy">系统代理: -</div>
       </div>
       <div class="row" style="margin-bottom: 8px;">
         <button id="btnRefreshStatus" class="secondary">刷新状态</button>
         <button id="btnRefreshLogs" class="secondary">刷新日志</button>
         <button id="btnClearLogs" class="secondary">清空日志</button>
       </div>
-      <div id="statusSummary" class="status-summary">summary: -</div>
+      <div id="statusSummary" class="status-summary">状态摘要: -</div>
       <div id="logs" class="logs"></div>
     </section>
   </div>
@@ -501,11 +501,11 @@
     function setProxyState(state) {
       proxyState = state;
       if (state === "enabled") {
-        ui.proxy.textContent = "system proxy: 已开启";
+        ui.proxy.textContent = "系统代理: 已开启";
       } else if (state === "disabled") {
-        ui.proxy.textContent = "system proxy: 已关闭";
+        ui.proxy.textContent = "系统代理: 已关闭";
       } else {
-        ui.proxy.textContent = "system proxy: 未知";
+        ui.proxy.textContent = "系统代理: 未知";
       }
     }
 
@@ -517,6 +517,18 @@
         return "已关闭";
       }
       return "未知";
+    }
+
+    function toYesNoText(v) {
+      return v ? "是" : "否";
+    }
+
+    function formatDisplayTime(value) {
+      const raw = String(value || "").trim();
+      if (!raw) return "-";
+      const d = new Date(raw);
+      if (Number.isNaN(d.getTime())) return raw;
+      return d.toLocaleString("zh-CN", { hour12: false });
     }
 
     function setSummaryTone(level) {
@@ -606,17 +618,17 @@
       }
       try {
         const s = await backend.GetClientStatus();
-        ui.running.textContent = "running: " + (s.running ? "yes" : "no");
-        ui.pid.textContent = "pid: " + (s.pid || "-");
-        ui.config.textContent = "config: " + (s.configPath || "-");
-        ui.started.textContent = "started: " + (s.lastStartedAt || "-");
-        ui.exited.textContent = "exited: " + (s.lastExitedAt || "-");
+        ui.running.textContent = "运行状态: " + (s.running ? "运行中" : "未运行");
+        ui.pid.textContent = "进程 PID: " + (s.pid || "-");
+        ui.config.textContent = "配置路径: " + (s.configPath || "-");
+        ui.started.textContent = "启动时间: " + formatDisplayTime(s.lastStartedAt);
+        ui.exited.textContent = "退出时间: " + formatDisplayTime(s.lastExitedAt);
         ui.statusSummary.textContent =
-          "summary: running=" + (s.running ? "yes" : "no") +
-          " | system_proxy=" + proxyStateLabel(proxyState) +
-          " | unsaved_config=" + (hasUnsavedConfig ? "yes" : "no") +
-          (authIssueHint ? " | auth_issue=" + authIssueHint : "") +
-          (s.lastError ? " | client_last_error=" + s.lastError : "");
+          "状态摘要: 运行中=" + toYesNoText(!!s.running) +
+          " | 系统代理=" + proxyStateLabel(proxyState) +
+          " | 未保存配置=" + toYesNoText(hasUnsavedConfig) +
+          (authIssueHint ? " | 鉴权问题=" + authIssueHint : "") +
+          (s.lastError ? " | 客户端错误=" + s.lastError : "");
         if (s.lastError) {
           setSummaryTone("err");
         } else if (authIssueHint) {
