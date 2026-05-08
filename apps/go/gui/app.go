@@ -16,6 +16,8 @@ import (
 
 const maxLogLines = 2000
 
+var ErrClientNotRunning = errors.New("client is not running")
+
 type ClientStatus struct {
 	Running             bool   `json:"running"`
 	PID                 int    `json:"pid"`
@@ -61,6 +63,17 @@ func NewApp() *App {
 
 func (a *App) Startup(ctx context.Context) {
 	a.ctx = ctx
+}
+
+func (a *App) Shutdown(ctx context.Context) {
+	_ = ctx
+	// Best-effort cleanup: if client was started by this GUI instance,
+	// stop it and disable system proxy to avoid leaving stale proxy settings.
+	if err := a.StopClient(true); err != nil && !errors.Is(err, ErrClientNotRunning) {
+		a.mu.Lock()
+		a.pushLogLineLocked(fmt.Sprintf("[%s] shutdown cleanup failed: %v", time.Now().Format(time.RFC3339), err))
+		a.mu.Unlock()
+	}
 }
 
 func (a *App) defaultClientConfigPath() string {
@@ -171,7 +184,7 @@ func (a *App) StopClient(autoDisableSystemProxy bool) error {
 	a.mu.Lock()
 	if a.clientCancel == nil {
 		a.mu.Unlock()
-		return errors.New("client is not running")
+		return ErrClientNotRunning
 	}
 	cancel := a.clientCancel
 	cfgPath := a.lastConfigPath

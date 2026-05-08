@@ -22,6 +22,7 @@ func main() {
 			Assets: assets,
 		},
 		OnStartup: app.Startup,
+		OnShutdown: app.Shutdown,
 		Bind: []any{
 			app,
 		},
