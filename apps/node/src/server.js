@@ -1,4 +1,5 @@
 const fs = require('fs');
+const dns = require('dns');
 const net = require('net');
 const path = require('path');
 const http2 = require('http2');
@@ -29,6 +30,10 @@ const remoteConnectMaxInFlightPerHost = Math.max(0, Math.floor(Number(cfg.remote
 const remoteConnectOverloadLogMinIntervalMs = Math.max(0, Number(cfg.remoteConnectOverloadLogMinIntervalMs || 3000));
 const remoteConnectOverloadWaitMs = Math.max(0, Math.floor(Number(cfg.remoteConnectOverloadWaitMs || 20)));
 const remoteConnectOverloadMaxWaiters = Math.max(0, Math.floor(Number(cfg.remoteConnectOverloadMaxWaiters || 1024)));
+const remoteDnsCacheEnabled = cfg.remoteDnsCacheEnabled !== false;
+const remoteDnsCacheTtlMs = Math.max(1000, Math.floor(Number(cfg.remoteDnsCacheTtlMs || 60000)));
+const remoteDnsNegativeCacheTtlMs = Math.max(200, Math.floor(Number(cfg.remoteDnsNegativeCacheTtlMs || 5000)));
+const remoteDnsCacheMaxEntries = Math.max(64, Math.floor(Number(cfg.remoteDnsCacheMaxEntries || 4096)));
 const remoteCircuitEnabled = cfg.remoteCircuitEnabled !== false;
 const remoteCircuitFailureThreshold = Math.max(1, Math.floor(Number(cfg.remoteCircuitFailureThreshold || 8)));
 const remoteCircuitOpenMs = Math.max(1000, Math.floor(Number(cfg.remoteCircuitOpenMs || 15000)));
@@ -80,8 +85,15 @@ let remoteConnectInFlightPerHostPeak = 0;
 let remoteConnectOverloadLastLogAt = 0;
 let remoteConnectOverloadWaiters = 0;
 const remoteConnectHostInFlight = new Map();
+const remoteDnsCache = new Map();
 const remoteCircuitState = new Map();
 const remoteCircuitLastLogAt = new Map();
+const dnsSummaryLast = {
+  hit: 0,
+  miss: 0,
+  negativeHit: 0,
+  resolveError: 0
+};
 
 function shouldEmitOverloadLog() {
   if (remoteConnectOverloadLogMinIntervalMs <= 0) return true;
@@ -93,14 +105,22 @@ function shouldEmitOverloadLog() {
   return true;
 }
 
-function createRemoteConnection(host, port) {
+function createRemoteConnection(host, port, family) {
+  const baseOptions = {};
+  if (family === 4 || family === 6) {
+    baseOptions.family = family;
+  }
+  if (baseOptions.family) {
+    return net.createConnection({ host, port, ...baseOptions });
+  }
   if (!remoteAutoSelectFamilyRuntimeEnabled) {
-    return net.createConnection({ host, port });
+    return net.createConnection({ host, port, ...baseOptions });
   }
   try {
     return net.createConnection({
       host,
       port,
+      ...baseOptions,
       autoSelectFamily: true,
       autoSelectFamilyAttemptTimeout: remoteAutoSelectFamilyAttemptTimeoutMs
     });
@@ -114,7 +134,99 @@ function createRemoteConnection(host, port) {
         )}`
       );
     }
-    return net.createConnection({ host, port });
+    return net.createConnection({ host, port, ...baseOptions });
+  }
+}
+
+function pruneDnsCacheIfNeeded() {
+  if (remoteDnsCache.size <= remoteDnsCacheMaxEntries) return;
+  const now = Date.now();
+  for (const [key, value] of remoteDnsCache.entries()) {
+    if (!value || Number(value.expiresAt || 0) <= now) {
+      remoteDnsCache.delete(key);
+    }
+    if (remoteDnsCache.size <= remoteDnsCacheMaxEntries) {
+      return;
+    }
+  }
+  while (remoteDnsCache.size > remoteDnsCacheMaxEntries) {
+    const firstKey = remoteDnsCache.keys().next().value;
+    if (!firstKey) break;
+    remoteDnsCache.delete(firstKey);
+  }
+}
+
+function chooseDnsAddressFromEntry(entry) {
+  if (!entry || !Array.isArray(entry.addresses) || entry.addresses.length === 0) return null;
+  const index = entry.nextIndex % entry.addresses.length;
+  const addr = entry.addresses[index];
+  entry.nextIndex = (entry.nextIndex + 1) % entry.addresses.length;
+  return addr;
+}
+
+async function resolveRemoteAddress(host) {
+  const normalizedHost = String(host || '').trim();
+  if (!normalizedHost) {
+    throw new Error('empty target host');
+  }
+  const ipFamily = net.isIP(normalizedHost);
+  if (ipFamily > 0 || !remoteDnsCacheEnabled) {
+    return { host: normalizedHost, family: ipFamily > 0 ? ipFamily : undefined };
+  }
+  const now = Date.now();
+  const cached = remoteDnsCache.get(normalizedHost);
+  if (cached && Number(cached.expiresAt || 0) > now) {
+    if (cached.type === 'negative') {
+      stats.remoteDnsNegativeCacheHitTotal += 1;
+      const err = new Error(cached.message || 'DNS lookup failed (cached)');
+      err.code = cached.code || 'EAI_AGAIN';
+      throw err;
+    }
+    const selected = chooseDnsAddressFromEntry(cached);
+    if (selected) {
+      stats.remoteDnsCacheHitTotal += 1;
+      return { host: selected.address, family: selected.family };
+    }
+  } else if (cached) {
+    remoteDnsCache.delete(normalizedHost);
+  }
+
+  stats.remoteDnsCacheMissTotal += 1;
+  try {
+    const records = await dns.promises.lookup(normalizedHost, { all: true, verbatim: true });
+    const addresses = Array.isArray(records)
+      ? records
+          .map((item) => ({
+            address: String(item && item.address ? item.address : '').trim(),
+            family: Number(item && item.family)
+          }))
+          .filter((item) => item.address && (item.family === 4 || item.family === 6))
+      : [];
+    if (addresses.length === 0) {
+      const err = new Error(`DNS lookup returned empty for ${normalizedHost}`);
+      err.code = 'ENOTFOUND';
+      throw err;
+    }
+    const entry = {
+      type: 'positive',
+      expiresAt: now + remoteDnsCacheTtlMs,
+      addresses,
+      nextIndex: 0
+    };
+    remoteDnsCache.set(normalizedHost, entry);
+    pruneDnsCacheIfNeeded();
+    const selected = chooseDnsAddressFromEntry(entry);
+    return { host: selected.address, family: selected.family };
+  } catch (err) {
+    stats.remoteDnsResolveErrorTotal += 1;
+    remoteDnsCache.set(normalizedHost, {
+      type: 'negative',
+      expiresAt: now + remoteDnsNegativeCacheTtlMs,
+      code: String((err && err.code) || 'EAI_AGAIN'),
+      message: String((err && err.message) || 'dns lookup failed')
+    });
+    pruneDnsCacheIfNeeded();
+    throw err;
   }
 }
 
@@ -285,6 +397,10 @@ const stats = {
   remoteConnectOverloadRejectTotal: 0,
   remoteConnectOverloadRejectByHostTotal: 0,
   remoteConnectOverloadWaitTotal: 0,
+  remoteDnsCacheHitTotal: 0,
+  remoteDnsCacheMissTotal: 0,
+  remoteDnsNegativeCacheHitTotal: 0,
+  remoteDnsResolveErrorTotal: 0,
   remoteCircuitRejectTotal: 0,
   remoteCircuitOpenTotal: 0,
   remoteIdleTimeoutTotal: 0,
@@ -297,8 +413,24 @@ loopDelay.enable();
 
 setInterval(() => {
   logger.info(
-    `metrics stream_total=${stats.streamTotal} active_streams=${stats.activeStreams} route_reject=${stats.routeRejectedTotal} auth_reject=${stats.authRejectedTotal} target_parse_fail=${stats.targetParseFailTotal} remote_ok=${stats.remoteConnectSuccessTotal} remote_error=${stats.remoteConnectErrorTotal} remote_connect_timeout=${stats.remoteConnectTimeoutTotal} remote_connect_overload_reject=${stats.remoteConnectOverloadRejectTotal} remote_connect_overload_reject_by_host=${stats.remoteConnectOverloadRejectByHostTotal} remote_connect_overload_wait_total=${stats.remoteConnectOverloadWaitTotal} remote_connect_overload_waiters=${remoteConnectOverloadWaiters} remote_circuit_reject=${stats.remoteCircuitRejectTotal} remote_circuit_open_total=${stats.remoteCircuitOpenTotal} remote_circuit_targets=${remoteCircuitState.size} remote_connect_inflight=${remoteConnectInFlight} remote_connect_inflight_peak=${remoteConnectInFlightPeak} remote_connect_inflight_host_peak=${remoteConnectInFlightPerHostPeak} remote_idle_timeout=${stats.remoteIdleTimeoutTotal} buffer_overflow=${stats.bufferOverflowTotal} retryable_err=${stats.retryableErrorTotal} non_retryable_err=${stats.nonRetryableErrorTotal} eventloop_p95_ms=${(loopDelay.percentile(95) / 1e6).toFixed(2)}`
+    `metrics stream_total=${stats.streamTotal} active_streams=${stats.activeStreams} route_reject=${stats.routeRejectedTotal} auth_reject=${stats.authRejectedTotal} target_parse_fail=${stats.targetParseFailTotal} remote_ok=${stats.remoteConnectSuccessTotal} remote_error=${stats.remoteConnectErrorTotal} remote_connect_timeout=${stats.remoteConnectTimeoutTotal} remote_connect_overload_reject=${stats.remoteConnectOverloadRejectTotal} remote_connect_overload_reject_by_host=${stats.remoteConnectOverloadRejectByHostTotal} remote_connect_overload_wait_total=${stats.remoteConnectOverloadWaitTotal} remote_connect_overload_waiters=${remoteConnectOverloadWaiters} remote_dns_cache_hit=${stats.remoteDnsCacheHitTotal} remote_dns_cache_miss=${stats.remoteDnsCacheMissTotal} remote_dns_negative_cache_hit=${stats.remoteDnsNegativeCacheHitTotal} remote_dns_resolve_error=${stats.remoteDnsResolveErrorTotal} remote_dns_cache_size=${remoteDnsCache.size} remote_circuit_reject=${stats.remoteCircuitRejectTotal} remote_circuit_open_total=${stats.remoteCircuitOpenTotal} remote_circuit_targets=${remoteCircuitState.size} remote_connect_inflight=${remoteConnectInFlight} remote_connect_inflight_peak=${remoteConnectInFlightPeak} remote_connect_inflight_host_peak=${remoteConnectInFlightPerHostPeak} remote_idle_timeout=${stats.remoteIdleTimeoutTotal} buffer_overflow=${stats.bufferOverflowTotal} retryable_err=${stats.retryableErrorTotal} non_retryable_err=${stats.nonRetryableErrorTotal} eventloop_p95_ms=${(loopDelay.percentile(95) / 1e6).toFixed(2)}`
   );
+  if (remoteDnsCacheEnabled) {
+    const hitDelta = Math.max(0, stats.remoteDnsCacheHitTotal - dnsSummaryLast.hit);
+    const missDelta = Math.max(0, stats.remoteDnsCacheMissTotal - dnsSummaryLast.miss);
+    const negativeHitDelta = Math.max(0, stats.remoteDnsNegativeCacheHitTotal - dnsSummaryLast.negativeHit);
+    const resolveErrorDelta = Math.max(0, stats.remoteDnsResolveErrorTotal - dnsSummaryLast.resolveError);
+    const totalLookups = hitDelta + missDelta + negativeHitDelta;
+    const cacheHitRate = totalLookups > 0 ? (((hitDelta + negativeHitDelta) / totalLookups) * 100).toFixed(1) : '0.0';
+    const negativeShare = totalLookups > 0 ? ((negativeHitDelta / totalLookups) * 100).toFixed(1) : '0.0';
+    logger.info(
+      `dns summary interval_ms=${metricsIntervalMs} lookups=${totalLookups} hit=${hitDelta} miss=${missDelta} negative_hit=${negativeHitDelta} resolve_error=${resolveErrorDelta} hit_rate_pct=${cacheHitRate} negative_share_pct=${negativeShare}`
+    );
+    dnsSummaryLast.hit = stats.remoteDnsCacheHitTotal;
+    dnsSummaryLast.miss = stats.remoteDnsCacheMissTotal;
+    dnsSummaryLast.negativeHit = stats.remoteDnsNegativeCacheHitTotal;
+    dnsSummaryLast.resolveError = stats.remoteDnsResolveErrorTotal;
+  }
   remoteConnectInFlightPeak = remoteConnectInFlight;
   if (remoteConnectMaxInFlightPerHost > 0) {
     remoteConnectInFlightPerHostPeak = 0;
@@ -684,6 +816,29 @@ server.on('stream', async (stream, headers) => {
       if (stats.activeStreams > 0) stats.activeStreams -= 1;
       return;
     }
+    let connectHost = host;
+    let connectFamily;
+    try {
+      const resolved = await resolveRemoteAddress(host);
+      connectHost = resolved.host;
+      connectFamily = resolved.family;
+    } catch (e) {
+      markServerError('retryable');
+      markCircuitFailure(connectTargetKey, 'dns_lookup_error');
+      if (shouldEmitRemoteErrorLog(host, port)) {
+        logger.warn(
+          `remote dns resolve failed, trace_id=${traceId}, stream=${streamId}, target=${host}:${port}, err=${String(
+            (e && (e.code || e.message)) || e
+          )}, err_class=retryable`
+        );
+      }
+      stream.respond({ ':status': 502 });
+      stream.end();
+      markUserConnectionClose(authUser);
+      releaseLeaseOnce();
+      if (stats.activeStreams > 0) stats.activeStreams -= 1;
+      return;
+    }
     const hasGlobalConnectSlot = () => remoteConnectInFlight < remoteConnectMaxInFlight;
     const hasHostConnectSlot = () => {
       if (remoteConnectMaxInFlightPerHost <= 0) return true;
@@ -751,7 +906,7 @@ server.on('stream', async (stream, headers) => {
       }
       releaseHostConnectSlot(connectTargetKey);
     };
-    const remote = createRemoteConnection(host, port);
+    const remote = createRemoteConnection(connectHost, port, connectFamily);
     remote.setNoDelay(true);
     remote.setKeepAlive(true, remoteKeepAliveInitialDelayMs);
 
@@ -912,6 +1067,9 @@ server.listen(cfg.listenPort, cfg.listenHost, listenBacklog, () => {
   logger.info(`remote connect max in flight per host=${remoteConnectMaxInFlightPerHost}`);
   logger.info(`remote connect overload wait ms=${remoteConnectOverloadWaitMs} max_waiters=${remoteConnectOverloadMaxWaiters}`);
   logger.info(`remote connect overload log min interval ms=${remoteConnectOverloadLogMinIntervalMs}`);
+  logger.info(
+    `remote dns cache enabled=${remoteDnsCacheEnabled} ttl_ms=${remoteDnsCacheTtlMs} negative_ttl_ms=${remoteDnsNegativeCacheTtlMs} max_entries=${remoteDnsCacheMaxEntries}`
+  );
   logger.info(
     `remote circuit enabled=${remoteCircuitEnabled} failure_threshold=${remoteCircuitFailureThreshold} open_ms=${remoteCircuitOpenMs} log_min_interval_ms=${remoteCircuitLogMinIntervalMs} max_targets=${remoteCircuitMaxTargets}`
   );

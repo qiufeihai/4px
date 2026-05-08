@@ -119,6 +119,10 @@ node bin/4px.js client -c config/client.json
 - `remoteConnectOverloadWaitMs`：过载时短暂等待可用建连槽的时长（毫秒，默认 `20`）
 - `remoteConnectOverloadMaxWaiters`：允许进入短暂等待的并发请求上限（默认 `1024`）
 - `remoteConnectOverloadLogMinIntervalMs`：过载拒绝日志最小输出间隔（毫秒，默认 `3000`；`0` 表示不限制）
+- `remoteDnsCacheEnabled`：是否启用轻量 DNS 缓存（默认 `true`）
+- `remoteDnsCacheTtlMs`：DNS 正缓存 TTL（毫秒，默认 `60000`）
+- `remoteDnsNegativeCacheTtlMs`：DNS 负缓存 TTL（毫秒，默认 `5000`）
+- `remoteDnsCacheMaxEntries`：DNS 缓存最大条目数（默认 `4096`）
 - `remoteCircuitEnabled`：是否启用目标级短时熔断（默认 `true`）
 - `remoteCircuitFailureThreshold`：单目标连续建连失败触发熔断的阈值（默认 `8`）
 - `remoteCircuitOpenMs`：熔断打开后拒绝时长（毫秒，默认 `15000`）
@@ -136,6 +140,7 @@ node bin/4px.js client -c config/client.json
 - 热点目标隔离：`remoteConnectMaxInFlightPerHost` 用于限制单个目标站点占用过多建连额度，避免“一个热点拖垮全部目标”。
 - 突发削峰：`remoteConnectOverloadWaitMs` 在过载时先做一次短暂等待再判定是否拒绝，可减少瞬时毛刺导致的 `503`。
 - 等待队列保护：`remoteConnectOverloadMaxWaiters` 限制等待队列规模，避免过载时等待请求无限增长。
+- 轻量 DNS 缓存：为目标域名提供正缓存与负缓存，减少高并发下重复解析与失败重试放大。
 - 目标级短时熔断：对连续建连失败的 `host:port` 短时拒绝，减少对故障目标的无效重试与全局资源占用。
 - 过载日志限频：`remoteConnectOverloadLogMinIntervalMs` 用于限制 `503` 过载拒绝告警频率，避免高峰期日志风暴进一步放大抖动。
 - 入站连接低延迟：`h2SessionNoDelay=true` 可减少客户端到 server 的小包合并等待；弱网小包场景下通常更稳。
@@ -160,6 +165,10 @@ node bin/4px.js client -c config/client.json
   "remoteConnectOverloadWaitMs": 20,
   "remoteConnectOverloadMaxWaiters": 768,
   "remoteConnectOverloadLogMinIntervalMs": 2000,
+  "remoteDnsCacheEnabled": true,
+  "remoteDnsCacheTtlMs": 45000,
+  "remoteDnsNegativeCacheTtlMs": 3000,
+  "remoteDnsCacheMaxEntries": 4096,
   "remoteCircuitEnabled": true,
   "remoteCircuitFailureThreshold": 6,
   "remoteCircuitOpenMs": 12000,
@@ -189,6 +198,10 @@ node bin/4px.js client -c config/client.json
   "remoteConnectOverloadWaitMs": 20,
   "remoteConnectOverloadMaxWaiters": 1024,
   "remoteConnectOverloadLogMinIntervalMs": 3000,
+  "remoteDnsCacheEnabled": true,
+  "remoteDnsCacheTtlMs": 60000,
+  "remoteDnsNegativeCacheTtlMs": 5000,
+  "remoteDnsCacheMaxEntries": 4096,
   "remoteCircuitEnabled": true,
   "remoteCircuitFailureThreshold": 8,
   "remoteCircuitOpenMs": 15000,
@@ -212,6 +225,9 @@ node bin/4px.js client -c config/client.json
 - `remoteConnectMaxInFlightPerHost` 建议先设为全局阈值的 `1/4` 到 `1/2`，观察 `remote_connect_overload_reject_by_host` 是否长期增长。
 - `remoteConnectOverloadWaitMs` 建议范围 `10~50`，数值越大越能缓冲毛刺，但会增加少量等待时延。
 - `remoteConnectOverloadMaxWaiters` 建议与 `remoteConnectMaxInFlightPerHost` 同量级或略大，避免等待队列过大。
+- `remoteDnsCacheTtlMs` 建议范围 `30000~120000`；域名变更频繁的环境可适当调短。
+- `remoteDnsNegativeCacheTtlMs` 建议范围 `1000~10000`；避免过长导致故障恢复后仍命中负缓存。
+- `remoteDnsCacheMaxEntries` 建议按目标域名规模设置，常见范围 `1024~8192`。
 - `remoteCircuitFailureThreshold` 建议范围 `5~12`；网络抖动大可略调高，目标故障明显可略调低。
 - `remoteCircuitOpenMs` 建议范围 `8000~30000`；若目标短时波动频繁，可适当调短以更快恢复探测。
 - `remoteConnectOverloadLogMinIntervalMs` 建议范围 `1000~5000`，高峰噪音大时优先调高它。
