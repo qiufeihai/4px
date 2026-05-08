@@ -10,5 +10,8 @@
     "start:server": "node src/server.js -c config/server.json",
     "start:client": "node src/client.js -c config/client.json",
     "start": "node bin/4px.js"
+  },
+  "engines": {
+    "node": ">=16"
   }
 }

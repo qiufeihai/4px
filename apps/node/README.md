@@ -27,7 +27,7 @@ Node 版本的 `4px` 负责核心数据面，包含：
 
 ## 前置要求
 
-- Node.js 18+（建议 LTS）
+- Node.js 16+（建议 LTS）
 - OpenSSL（用于测试证书）
 - Linux 生产部署需 systemd（仅在使用部署脚本时需要）
 
@@ -110,7 +110,7 @@ node bin/4px.js client -c config/client.json
 - `remoteErrorLogMinIntervalMs`：`remote connection error` 同目标日志最小输出间隔（毫秒，默认 `3000`；`0` 表示不限制）
 - `h2HeaderTableSize` / `h2InitialWindowSize` / `h2MaxConcurrentStreams` / `h2MaxFrameSize` / `h2MaxHeaderListSize` / `h2EnableConnectProtocol`：HTTP/2 连接参数（默认值见配置文件，通常保持默认）
 - `remoteConnectTimeoutMs`：到目标地址连接超时
-- `remoteAutoSelectFamily`：是否启用 Node 的双栈自动建连（Happy Eyeballs 等价能力，默认 `true`）
+- `remoteAutoSelectFamily`：是否启用 Node 内置双栈自动建连（默认 `true`；低版本不支持时会自动回退）
 - `remoteAutoSelectFamilyAttemptTimeoutMs`：双栈竞速延迟（毫秒，默认 `300`）
 - `remoteConnectMaxInFlight`：server 同时进行中的出站建连上限（默认 `4096`；超过会快速返回 `503`，用于抑制建连风暴）
 - `remoteIdleTimeoutMs`：目标连接空闲超时（`0` 表示关闭）
@@ -119,7 +119,7 @@ node bin/4px.js client -c config/client.json
 
 ### 正向代理性能优化项（server）
 
-- 双栈自动建连：开启 `remoteAutoSelectFamily=true` 后，server 出站建连会自动在 IPv4/IPv6 间做快速择优，降低 DNS/网络波动时的 `connect_ms` 尾延迟。
+- 双栈自动建连：`remoteAutoSelectFamily=true` 时，server 尝试启用 Node 内置 `autoSelectFamily`，自动在 IPv4/IPv6 间做快速择优，降低 DNS/网络波动时的 `connect_ms` 尾延迟。
 - 竞速延迟控制：`remoteAutoSelectFamilyAttemptTimeoutMs` 控制双栈竞速间隔，默认 `300ms`。网络较稳可适当调低（如 `150~250`），网络复杂建议保持默认。
 - 建连风暴保护：`remoteConnectMaxInFlight` 用于限制同时进行中的目标建连数；超阈值请求会快速返回 `503`，避免 event loop 被大量慢建连拖垮。
 - 兼容回退：若当前 Node 运行时不支持 `autoSelectFamily`，server 会自动回退到默认 `net.createConnection` 行为，不影响服务可用性。
