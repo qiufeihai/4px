@@ -25,6 +25,10 @@ const maxBufferedBytes = cfg.maxBufferedBytes || 4 * 1024 * 1024;
 const metricsIntervalMs = cfg.metricsIntervalMs || 30000;
 const listenBacklog = cfg.listenBacklog || 4096;
 const remoteConnectMaxInFlight = Math.max(1, Math.floor(Number(cfg.remoteConnectMaxInFlight || 4096)));
+const remoteConnectMaxInFlightPerHost = Math.max(0, Math.floor(Number(cfg.remoteConnectMaxInFlightPerHost || 1024)));
+const remoteConnectOverloadLogMinIntervalMs = Math.max(0, Number(cfg.remoteConnectOverloadLogMinIntervalMs || 3000));
+const remoteConnectOverloadWaitMs = Math.max(0, Math.floor(Number(cfg.remoteConnectOverloadWaitMs || 20)));
+const remoteConnectOverloadMaxWaiters = Math.max(0, Math.floor(Number(cfg.remoteConnectOverloadMaxWaiters || 1024)));
 const establishWarnThresholdMs = Math.max(200, Number(cfg.establishWarnThresholdMs || 1500));
 const establishWarnMinIntervalMs = Math.max(200, Number(cfg.establishWarnMinIntervalMs || 5000));
 const slowEstablishEnabled = cfg.slowEstablishEnabled === true;
@@ -36,6 +40,12 @@ const h2MaxConcurrentStreams = Number(cfg.h2MaxConcurrentStreams || 1024);
 const h2MaxFrameSize = Number(cfg.h2MaxFrameSize || 64 * 1024);
 const h2MaxHeaderListSize = Number(cfg.h2MaxHeaderListSize || 64 * 1024);
 const h2EnableConnectProtocol = cfg.h2EnableConnectProtocol === true;
+const h2SessionNoDelay = cfg.h2SessionNoDelay !== false;
+const h2SessionKeepAlive = cfg.h2SessionKeepAlive !== false;
+const h2SessionKeepAliveInitialDelayMs = Math.max(
+  0,
+  Number(cfg.h2SessionKeepAliveInitialDelayMs || 30000)
+);
 const userRuntimeTrackingEnabled = cfg.userRuntimeTrackingEnabled === true;
 const userActivityUpdateIntervalMs = Math.max(1000, Number(cfg.userActivityUpdateIntervalMs || 60000));
 const defaultMaxDevices = Math.max(1, Math.floor(Number(cfg.defaultMaxDevices || 1)));
@@ -60,6 +70,21 @@ const remoteErrorLastLogAt = new Map();
 let remoteAutoSelectFamilyRuntimeEnabled = remoteAutoSelectFamily;
 let remoteAutoSelectFamilyFallbackWarned = false;
 let remoteConnectInFlight = 0;
+let remoteConnectInFlightPeak = 0;
+let remoteConnectInFlightPerHostPeak = 0;
+let remoteConnectOverloadLastLogAt = 0;
+let remoteConnectOverloadWaiters = 0;
+const remoteConnectHostInFlight = new Map();
+
+function shouldEmitOverloadLog() {
+  if (remoteConnectOverloadLogMinIntervalMs <= 0) return true;
+  const now = Date.now();
+  if (now - remoteConnectOverloadLastLogAt < remoteConnectOverloadLogMinIntervalMs) {
+    return false;
+  }
+  remoteConnectOverloadLastLogAt = now;
+  return true;
+}
 
 function createRemoteConnection(host, port) {
   if (!remoteAutoSelectFamilyRuntimeEnabled) {
@@ -84,6 +109,34 @@ function createRemoteConnection(host, port) {
     }
     return net.createConnection({ host, port });
   }
+}
+
+function targetKey(host, port) {
+  return `${String(host || '').trim().toLowerCase()}:${Number(port || 0)}`;
+}
+
+function acquireHostConnectSlot(key) {
+  if (remoteConnectMaxInFlightPerHost <= 0) return true;
+  const current = Number(remoteConnectHostInFlight.get(key) || 0);
+  if (current >= remoteConnectMaxInFlightPerHost) {
+    return false;
+  }
+  const next = current + 1;
+  remoteConnectHostInFlight.set(key, next);
+  if (next > remoteConnectInFlightPerHostPeak) {
+    remoteConnectInFlightPerHostPeak = next;
+  }
+  return true;
+}
+
+function releaseHostConnectSlot(key) {
+  if (remoteConnectMaxInFlightPerHost <= 0) return;
+  const current = Number(remoteConnectHostInFlight.get(key) || 0);
+  if (current <= 1) {
+    remoteConnectHostInFlight.delete(key);
+    return;
+  }
+  remoteConnectHostInFlight.set(key, current - 1);
 }
 
 function shouldEmitSlowWarn(kind, host, port) {
@@ -152,6 +205,8 @@ const stats = {
   remoteConnectErrorTotal: 0,
   remoteConnectTimeoutTotal: 0,
   remoteConnectOverloadRejectTotal: 0,
+  remoteConnectOverloadRejectByHostTotal: 0,
+  remoteConnectOverloadWaitTotal: 0,
   remoteIdleTimeoutTotal: 0,
   bufferOverflowTotal: 0,
   retryableErrorTotal: 0,
@@ -162,8 +217,12 @@ loopDelay.enable();
 
 setInterval(() => {
   logger.info(
-    `metrics stream_total=${stats.streamTotal} active_streams=${stats.activeStreams} route_reject=${stats.routeRejectedTotal} auth_reject=${stats.authRejectedTotal} target_parse_fail=${stats.targetParseFailTotal} remote_ok=${stats.remoteConnectSuccessTotal} remote_error=${stats.remoteConnectErrorTotal} remote_connect_timeout=${stats.remoteConnectTimeoutTotal} remote_connect_overload_reject=${stats.remoteConnectOverloadRejectTotal} remote_connect_inflight=${remoteConnectInFlight} remote_idle_timeout=${stats.remoteIdleTimeoutTotal} buffer_overflow=${stats.bufferOverflowTotal} retryable_err=${stats.retryableErrorTotal} non_retryable_err=${stats.nonRetryableErrorTotal} eventloop_p95_ms=${(loopDelay.percentile(95) / 1e6).toFixed(2)}`
+    `metrics stream_total=${stats.streamTotal} active_streams=${stats.activeStreams} route_reject=${stats.routeRejectedTotal} auth_reject=${stats.authRejectedTotal} target_parse_fail=${stats.targetParseFailTotal} remote_ok=${stats.remoteConnectSuccessTotal} remote_error=${stats.remoteConnectErrorTotal} remote_connect_timeout=${stats.remoteConnectTimeoutTotal} remote_connect_overload_reject=${stats.remoteConnectOverloadRejectTotal} remote_connect_overload_reject_by_host=${stats.remoteConnectOverloadRejectByHostTotal} remote_connect_overload_wait_total=${stats.remoteConnectOverloadWaitTotal} remote_connect_overload_waiters=${remoteConnectOverloadWaiters} remote_connect_inflight=${remoteConnectInFlight} remote_connect_inflight_peak=${remoteConnectInFlightPeak} remote_connect_inflight_host_peak=${remoteConnectInFlightPerHostPeak} remote_idle_timeout=${stats.remoteIdleTimeoutTotal} buffer_overflow=${stats.bufferOverflowTotal} retryable_err=${stats.retryableErrorTotal} non_retryable_err=${stats.nonRetryableErrorTotal} eventloop_p95_ms=${(loopDelay.percentile(95) / 1e6).toFixed(2)}`
   );
+  remoteConnectInFlightPeak = remoteConnectInFlight;
+  if (remoteConnectMaxInFlightPerHost > 0) {
+    remoteConnectInFlightPerHostPeak = 0;
+  }
   loopDelay.reset();
 }, metricsIntervalMs).unref();
 
@@ -398,6 +457,17 @@ const server = http2.createSecureServer({
   }
 });
 
+server.on('session', (session) => {
+  const socket = session && session.socket;
+  if (!socket) return;
+  if (h2SessionNoDelay) {
+    socket.setNoDelay(true);
+  }
+  if (h2SessionKeepAlive) {
+    socket.setKeepAlive(true, h2SessionKeepAliveInitialDelayMs);
+  }
+});
+
 function renderCamouflagePage() {
   const now = new Date().toISOString();
   return `<!doctype html>
@@ -429,7 +499,7 @@ function renderCamouflagePage() {
 </html>`;
 }
 
-server.on('stream', (stream, headers) => {
+server.on('stream', async (stream, headers) => {
   stats.streamTotal += 1;
   stats.activeStreams += 1;
   const remotePeer = `${stream.session.socket.remoteAddress || '-'}:${stream.session.socket.remotePort || '-'}`;
@@ -516,12 +586,54 @@ server.on('stream', (stream, headers) => {
     if (logger.enabled('INFO')) {
       logger.info(`stream accepted, trace_id=${traceId}, peer=${remotePeer}, stream=${streamId}, user=${authUser.username}, target=${host}:${port}`);
     }
-    if (remoteConnectInFlight >= remoteConnectMaxInFlight) {
+    const connectTargetKey = targetKey(host, port);
+    const hasGlobalConnectSlot = () => remoteConnectInFlight < remoteConnectMaxInFlight;
+    const hasHostConnectSlot = () => {
+      if (remoteConnectMaxInFlightPerHost <= 0) return true;
+      return Number(remoteConnectHostInFlight.get(connectTargetKey) || 0) < remoteConnectMaxInFlightPerHost;
+    };
+    let waitedForOverloadRelief = false;
+    if ((!hasGlobalConnectSlot() || !hasHostConnectSlot()) && remoteConnectOverloadWaitMs > 0 && remoteConnectOverloadWaiters < remoteConnectOverloadMaxWaiters) {
+      waitedForOverloadRelief = true;
+      stats.remoteConnectOverloadWaitTotal += 1;
+      remoteConnectOverloadWaiters += 1;
+      try {
+        await new Promise((resolve) => setTimeout(resolve, remoteConnectOverloadWaitMs));
+      } finally {
+        if (remoteConnectOverloadWaiters > 0) {
+          remoteConnectOverloadWaiters -= 1;
+        }
+      }
+      if (stream.destroyed) {
+        markUserConnectionClose(authUser);
+        releaseLeaseOnce();
+        if (stats.activeStreams > 0) stats.activeStreams -= 1;
+        return;
+      }
+    }
+    if (!hasGlobalConnectSlot()) {
       stats.remoteConnectOverloadRejectTotal += 1;
       markServerError('retryable');
-      logger.warn(
-        `remote connect overload reject, trace_id=${traceId}, stream=${streamId}, target=${host}:${port}, inflight=${remoteConnectInFlight}, max_inflight=${remoteConnectMaxInFlight}, err_class=retryable`
-      );
+      if (shouldEmitOverloadLog()) {
+        logger.warn(
+          `remote connect overload reject, trace_id=${traceId}, stream=${streamId}, target=${host}:${port}, inflight=${remoteConnectInFlight}, max_inflight=${remoteConnectMaxInFlight}, waited=${waitedForOverloadRelief}, err_class=retryable`
+        );
+      }
+      stream.respond({ ':status': 503 });
+      stream.end();
+      markUserConnectionClose(authUser);
+      releaseLeaseOnce();
+      if (stats.activeStreams > 0) stats.activeStreams -= 1;
+      return;
+    }
+    if (!acquireHostConnectSlot(connectTargetKey)) {
+      stats.remoteConnectOverloadRejectByHostTotal += 1;
+      markServerError('retryable');
+      if (shouldEmitOverloadLog()) {
+        logger.warn(
+          `remote connect overload reject by host, trace_id=${traceId}, stream=${streamId}, target=${host}:${port}, host_inflight=${Number(remoteConnectHostInFlight.get(connectTargetKey) || 0)}, max_host_inflight=${remoteConnectMaxInFlightPerHost}, waited=${waitedForOverloadRelief}, err_class=retryable`
+        );
+      }
       stream.respond({ ':status': 503 });
       stream.end();
       markUserConnectionClose(authUser);
@@ -530,6 +642,9 @@ server.on('stream', (stream, headers) => {
       return;
     }
     remoteConnectInFlight += 1;
+    if (remoteConnectInFlight > remoteConnectInFlightPeak) {
+      remoteConnectInFlightPeak = remoteConnectInFlight;
+    }
     let connectInflightReleased = false;
     const releaseConnectInflight = () => {
       if (connectInflightReleased) return;
@@ -537,6 +652,7 @@ server.on('stream', (stream, headers) => {
       if (remoteConnectInFlight > 0) {
         remoteConnectInFlight -= 1;
       }
+      releaseHostConnectSlot(connectTargetKey);
     };
     const remote = createRemoteConnection(host, port);
     remote.setNoDelay(true);
@@ -683,11 +799,17 @@ server.listen(cfg.listenPort, cfg.listenHost, listenBacklog, () => {
   logger.info(
     `h2 settings header_table_size=${h2HeaderTableSize} initial_window_size=${h2InitialWindowSize} max_concurrent_streams=${h2MaxConcurrentStreams} max_frame_size=${h2MaxFrameSize} max_header_list_size=${h2MaxHeaderListSize}`
   );
+  logger.info(
+    `h2 session socket no_delay=${h2SessionNoDelay} keep_alive=${h2SessionKeepAlive} keep_alive_initial_delay_ms=${h2SessionKeepAliveInitialDelayMs}`
+  );
   logger.info('proxy routes v1=/proxy');
   logger.info(`user runtime tracking enabled=${userRuntimeTrackingEnabled}`);
   logger.info(`slow establish enabled=${slowEstablishEnabled} threshold_ms=${establishWarnThresholdMs} min_interval_ms=${establishWarnMinIntervalMs} top_n=${slowEstablishTopN}`);
   logger.info(`remote error log min interval ms=${remoteErrorLogMinIntervalMs}`);
   logger.info(`remote connect max in flight=${remoteConnectMaxInFlight}`);
+  logger.info(`remote connect max in flight per host=${remoteConnectMaxInFlightPerHost}`);
+  logger.info(`remote connect overload wait ms=${remoteConnectOverloadWaitMs} max_waiters=${remoteConnectOverloadMaxWaiters}`);
+  logger.info(`remote connect overload log min interval ms=${remoteConnectOverloadLogMinIntervalMs}`);
   logger.info(
     `remote auto select family enabled=${remoteAutoSelectFamily} attempt_timeout_ms=${remoteAutoSelectFamilyAttemptTimeoutMs}`
   );

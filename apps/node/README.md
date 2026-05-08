@@ -109,10 +109,16 @@ node bin/4px.js client -c config/client.json
 - `establishWarnMinIntervalMs`：同目标慢建链日志最小间隔（毫秒，默认 `5000`，用于限频降噪）
 - `remoteErrorLogMinIntervalMs`：`remote connection error` 同目标日志最小输出间隔（毫秒，默认 `3000`；`0` 表示不限制）
 - `h2HeaderTableSize` / `h2InitialWindowSize` / `h2MaxConcurrentStreams` / `h2MaxFrameSize` / `h2MaxHeaderListSize` / `h2EnableConnectProtocol`：HTTP/2 连接参数（默认值见配置文件，通常保持默认）
+- `h2SessionNoDelay`：是否对入站 H2 会话 socket 启用 `TCP_NODELAY`（默认 `true`，降低小包延迟）
+- `h2SessionKeepAlive` / `h2SessionKeepAliveInitialDelayMs`：入站 H2 会话 socket 保活设置（默认开启，初始延迟 `30000ms`）
 - `remoteConnectTimeoutMs`：到目标地址连接超时
 - `remoteAutoSelectFamily`：是否启用 Node 内置双栈自动建连（默认 `true`；低版本不支持时会自动回退）
 - `remoteAutoSelectFamilyAttemptTimeoutMs`：双栈竞速延迟（毫秒，默认 `300`）
 - `remoteConnectMaxInFlight`：server 同时进行中的出站建连上限（默认 `4096`；超过会快速返回 `503`，用于抑制建连风暴）
+- `remoteConnectMaxInFlightPerHost`：单目标主机（host:port）同时进行中的建连上限（默认 `1024`；用于隔离热点目标）
+- `remoteConnectOverloadWaitMs`：过载时短暂等待可用建连槽的时长（毫秒，默认 `20`）
+- `remoteConnectOverloadMaxWaiters`：允许进入短暂等待的并发请求上限（默认 `1024`）
+- `remoteConnectOverloadLogMinIntervalMs`：过载拒绝日志最小输出间隔（毫秒，默认 `3000`；`0` 表示不限制）
 - `remoteIdleTimeoutMs`：目标连接空闲超时（`0` 表示关闭）
 - `remoteKeepAliveInitialDelayMs`：目标连接 KeepAlive 初始延迟
 - `streamIdleTimeoutMs`：H2 stream 空闲超时（`0` 表示关闭）
@@ -122,6 +128,12 @@ node bin/4px.js client -c config/client.json
 - 双栈自动建连：`remoteAutoSelectFamily=true` 时，server 尝试启用 Node 内置 `autoSelectFamily`，自动在 IPv4/IPv6 间做快速择优，降低 DNS/网络波动时的 `connect_ms` 尾延迟。
 - 竞速延迟控制：`remoteAutoSelectFamilyAttemptTimeoutMs` 控制双栈竞速间隔，默认 `300ms`。网络较稳可适当调低（如 `150~250`），网络复杂建议保持默认。
 - 建连风暴保护：`remoteConnectMaxInFlight` 用于限制同时进行中的目标建连数；超阈值请求会快速返回 `503`，避免 event loop 被大量慢建连拖垮。
+- 热点目标隔离：`remoteConnectMaxInFlightPerHost` 用于限制单个目标站点占用过多建连额度，避免“一个热点拖垮全部目标”。
+- 突发削峰：`remoteConnectOverloadWaitMs` 在过载时先做一次短暂等待再判定是否拒绝，可减少瞬时毛刺导致的 `503`。
+- 等待队列保护：`remoteConnectOverloadMaxWaiters` 限制等待队列规模，避免过载时等待请求无限增长。
+- 过载日志限频：`remoteConnectOverloadLogMinIntervalMs` 用于限制 `503` 过载拒绝告警频率，避免高峰期日志风暴进一步放大抖动。
+- 入站连接低延迟：`h2SessionNoDelay=true` 可减少客户端到 server 的小包合并等待；弱网小包场景下通常更稳。
+- 入站会话保活：`h2SessionKeepAlive` 有助于减少长连接空闲后异常断连带来的重连抖动。
 - 兼容回退：若当前 Node 运行时不支持 `autoSelectFamily`，server 会自动回退到默认 `net.createConnection` 行为，不影响服务可用性。
 - 启动可观测：server 启动日志会打印 `remote auto select family enabled=... attempt_timeout_ms=...`，用于确认配置是否生效。
 - 建议搭配：生产环境建议和 `slowEstablishEnabled`、`establishWarnThresholdMs` 一起使用，持续观察 `connect_ms` 与 `ttfb_ms` 的变化。
@@ -132,9 +144,16 @@ node bin/4px.js client -c config/client.json
 
 ```json
 {
+  "h2SessionNoDelay": true,
+  "h2SessionKeepAlive": true,
+  "h2SessionKeepAliveInitialDelayMs": 30000,
   "remoteAutoSelectFamily": true,
   "remoteAutoSelectFamilyAttemptTimeoutMs": 200,
   "remoteConnectMaxInFlight": 3072,
+  "remoteConnectMaxInFlightPerHost": 768,
+  "remoteConnectOverloadWaitMs": 20,
+  "remoteConnectOverloadMaxWaiters": 768,
+  "remoteConnectOverloadLogMinIntervalMs": 2000,
   "remoteConnectTimeoutMs": 12000,
   "remoteIdleTimeoutMs": 240000,
   "streamIdleTimeoutMs": 240000,
@@ -149,9 +168,16 @@ node bin/4px.js client -c config/client.json
 
 ```json
 {
+  "h2SessionNoDelay": true,
+  "h2SessionKeepAlive": true,
+  "h2SessionKeepAliveInitialDelayMs": 30000,
   "remoteAutoSelectFamily": true,
   "remoteAutoSelectFamilyAttemptTimeoutMs": 300,
   "remoteConnectMaxInFlight": 4096,
+  "remoteConnectMaxInFlightPerHost": 1024,
+  "remoteConnectOverloadWaitMs": 20,
+  "remoteConnectOverloadMaxWaiters": 1024,
+  "remoteConnectOverloadLogMinIntervalMs": 3000,
   "remoteConnectTimeoutMs": 15000,
   "remoteIdleTimeoutMs": 300000,
   "streamIdleTimeoutMs": 300000,
@@ -167,7 +193,25 @@ node bin/4px.js client -c config/client.json
 - 先用“稳定优先”跑 1~2 天观察基线，再切“低延迟优先”做 AB 对比。
 - `remoteAutoSelectFamilyAttemptTimeoutMs` 建议调节范围 `150~400`，每次调整不超过 `50ms`。
 - `remoteConnectMaxInFlight` 建议从 `2048/3072/4096` 分档试验，观察 `remote_connect_overload_reject` 与 p95/p99 的平衡点。
+- `remoteConnectMaxInFlightPerHost` 建议先设为全局阈值的 `1/4` 到 `1/2`，观察 `remote_connect_overload_reject_by_host` 是否长期增长。
+- `remoteConnectOverloadWaitMs` 建议范围 `10~50`，数值越大越能缓冲毛刺，但会增加少量等待时延。
+- `remoteConnectOverloadMaxWaiters` 建议与 `remoteConnectMaxInFlightPerHost` 同量级或略大，避免等待队列过大。
+- `remoteConnectOverloadLogMinIntervalMs` 建议范围 `1000~5000`，高峰噪音大时优先调高它。
 - 若出现日志量激增，先提高 `establishWarnThresholdMs`，再考虑关闭 `slowEstablishEnabled`。
+
+#### `remoteConnectMaxInFlight` 调试流程
+
+1. 选择基线值：先用 `4096` 跑完整业务高峰时段（至少 30 分钟）。
+2. 记录指标：重点看 `remote_connect_overload_reject`、`remote_connect_inflight_peak`、`eventloop_p95_ms`、业务 p95/p99。
+3. 判断是否过高：若 `eventloop_p95_ms` 偏高且 `remote_connect_inflight_peak` 长时间贴近上限，说明并发建连压力过大。
+4. 判断是否过低：若 `remote_connect_overload_reject` 持续增长，但 `eventloop_p95_ms` 很低，说明上限可能设得过保守。
+5. 单步调整：每次仅调整一档（`4096 -> 3072 -> 2048` 或反向），每次变更后至少观察一个完整高峰周期。
+
+推荐判定口径：
+
+- 下调 `remoteConnectMaxInFlight`：`eventloop_p95_ms` 升高明显，且出现频繁慢建连或抖动。
+- 上调 `remoteConnectMaxInFlight`：`remote_connect_overload_reject` 持续升高且业务成功率受影响，但 `eventloop_p95_ms` 仍稳定。
+- 保持不变：`remote_connect_overload_reject` 低且稳定，`remote_connect_inflight_peak` 不长期贴边，业务 p95/p99 无恶化。
 
 ### `client.json`
 
