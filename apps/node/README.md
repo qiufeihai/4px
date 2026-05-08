@@ -110,9 +110,59 @@ node bin/4px.js client -c config/client.json
 - `remoteErrorLogMinIntervalMs`：`remote connection error` 同目标日志最小输出间隔（毫秒，默认 `3000`；`0` 表示不限制）
 - `h2HeaderTableSize` / `h2InitialWindowSize` / `h2MaxConcurrentStreams` / `h2MaxFrameSize` / `h2MaxHeaderListSize` / `h2EnableConnectProtocol`：HTTP/2 连接参数（默认值见配置文件，通常保持默认）
 - `remoteConnectTimeoutMs`：到目标地址连接超时
+- `remoteAutoSelectFamily`：是否启用 Node 的双栈自动建连（Happy Eyeballs 等价能力，默认 `true`）
+- `remoteAutoSelectFamilyAttemptTimeoutMs`：双栈竞速延迟（毫秒，默认 `300`）
 - `remoteIdleTimeoutMs`：目标连接空闲超时（`0` 表示关闭）
 - `remoteKeepAliveInitialDelayMs`：目标连接 KeepAlive 初始延迟
 - `streamIdleTimeoutMs`：H2 stream 空闲超时（`0` 表示关闭）
+
+### 正向代理性能优化项（server）
+
+- 双栈自动建连：开启 `remoteAutoSelectFamily=true` 后，server 出站建连会自动在 IPv4/IPv6 间做快速择优，降低 DNS/网络波动时的 `connect_ms` 尾延迟。
+- 竞速延迟控制：`remoteAutoSelectFamilyAttemptTimeoutMs` 控制双栈竞速间隔，默认 `300ms`。网络较稳可适当调低（如 `150~250`），网络复杂建议保持默认。
+- 兼容回退：若当前 Node 运行时不支持 `autoSelectFamily`，server 会自动回退到默认 `net.createConnection` 行为，不影响服务可用性。
+- 启动可观测：server 启动日志会打印 `remote auto select family enabled=... attempt_timeout_ms=...`，用于确认配置是否生效。
+- 建议搭配：生产环境建议和 `slowEstablishEnabled`、`establishWarnThresholdMs` 一起使用，持续观察 `connect_ms` 与 `ttfb_ms` 的变化。
+
+### 推荐生产参数模板（server）
+
+低延迟优先（先压 `connect_ms` 尾延迟）：
+
+```json
+{
+  "remoteAutoSelectFamily": true,
+  "remoteAutoSelectFamilyAttemptTimeoutMs": 200,
+  "remoteConnectTimeoutMs": 12000,
+  "remoteIdleTimeoutMs": 240000,
+  "streamIdleTimeoutMs": 240000,
+  "slowEstablishEnabled": true,
+  "establishWarnThresholdMs": 1200,
+  "establishWarnMinIntervalMs": 5000,
+  "remoteErrorLogMinIntervalMs": 3000
+}
+```
+
+稳定优先（先控波动与日志开销）：
+
+```json
+{
+  "remoteAutoSelectFamily": true,
+  "remoteAutoSelectFamilyAttemptTimeoutMs": 300,
+  "remoteConnectTimeoutMs": 15000,
+  "remoteIdleTimeoutMs": 300000,
+  "streamIdleTimeoutMs": 300000,
+  "slowEstablishEnabled": false,
+  "establishWarnThresholdMs": 1500,
+  "establishWarnMinIntervalMs": 5000,
+  "remoteErrorLogMinIntervalMs": 3000
+}
+```
+
+使用建议：
+
+- 先用“稳定优先”跑 1~2 天观察基线，再切“低延迟优先”做 AB 对比。
+- `remoteAutoSelectFamilyAttemptTimeoutMs` 建议调节范围 `150~400`，每次调整不超过 `50ms`。
+- 若出现日志量激增，先提高 `establishWarnThresholdMs`，再考虑关闭 `slowEstablishEnabled`。
 
 ### `client.json`
 

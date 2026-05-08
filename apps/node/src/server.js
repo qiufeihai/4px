@@ -15,6 +15,11 @@ const logger = createLogger('server', cfg.logLevel);
 const remoteConnectTimeoutMs = cfg.remoteConnectTimeoutMs || cfg.connectTimeoutMs || 10000;
 const remoteIdleTimeoutMs = Number.isFinite(Number(cfg.remoteIdleTimeoutMs)) ? Number(cfg.remoteIdleTimeoutMs) : 300000;
 const remoteKeepAliveInitialDelayMs = cfg.remoteKeepAliveInitialDelayMs || 30000;
+const remoteAutoSelectFamily = cfg.remoteAutoSelectFamily !== false;
+const remoteAutoSelectFamilyAttemptTimeoutMs = Math.max(
+  10,
+  Number(cfg.remoteAutoSelectFamilyAttemptTimeoutMs || 300)
+);
 const streamIdleTimeoutMs = Number.isFinite(Number(cfg.streamIdleTimeoutMs)) ? Number(cfg.streamIdleTimeoutMs) : 300000;
 const maxBufferedBytes = cfg.maxBufferedBytes || 4 * 1024 * 1024;
 const metricsIntervalMs = cfg.metricsIntervalMs || 30000;
@@ -51,6 +56,33 @@ const userDeviceLeases = new Map();
 const slowEstablishLastWarnAt = new Map();
 const slowEstablishSummary = new Map();
 const remoteErrorLastLogAt = new Map();
+let remoteAutoSelectFamilyRuntimeEnabled = remoteAutoSelectFamily;
+let remoteAutoSelectFamilyFallbackWarned = false;
+
+function createRemoteConnection(host, port) {
+  if (!remoteAutoSelectFamilyRuntimeEnabled) {
+    return net.createConnection({ host, port });
+  }
+  try {
+    return net.createConnection({
+      host,
+      port,
+      autoSelectFamily: true,
+      autoSelectFamilyAttemptTimeout: remoteAutoSelectFamilyAttemptTimeoutMs
+    });
+  } catch (err) {
+    remoteAutoSelectFamilyRuntimeEnabled = false;
+    if (!remoteAutoSelectFamilyFallbackWarned) {
+      remoteAutoSelectFamilyFallbackWarned = true;
+      logger.warn(
+        `remote autoSelectFamily unsupported, fallback to default connect behavior, err=${String(
+          err && (err.code || err.message || err)
+        )}`
+      );
+    }
+    return net.createConnection({ host, port });
+  }
+}
 
 function shouldEmitSlowWarn(kind, host, port) {
   if (!slowEstablishEnabled) return false;
@@ -481,7 +513,7 @@ server.on('stream', (stream, headers) => {
     if (logger.enabled('INFO')) {
       logger.info(`stream accepted, trace_id=${traceId}, peer=${remotePeer}, stream=${streamId}, user=${authUser.username}, target=${host}:${port}`);
     }
-    const remote = net.createConnection({ host, port });
+    const remote = createRemoteConnection(host, port);
     remote.setNoDelay(true);
     remote.setKeepAlive(true, remoteKeepAliveInitialDelayMs);
 
@@ -627,6 +659,9 @@ server.listen(cfg.listenPort, cfg.listenHost, listenBacklog, () => {
   logger.info(`user runtime tracking enabled=${userRuntimeTrackingEnabled}`);
   logger.info(`slow establish enabled=${slowEstablishEnabled} threshold_ms=${establishWarnThresholdMs} min_interval_ms=${establishWarnMinIntervalMs} top_n=${slowEstablishTopN}`);
   logger.info(`remote error log min interval ms=${remoteErrorLogMinIntervalMs}`);
+  logger.info(
+    `remote auto select family enabled=${remoteAutoSelectFamily} attempt_timeout_ms=${remoteAutoSelectFamilyAttemptTimeoutMs}`
+  );
   logger.info(`device limit default_max_devices=${defaultMaxDevices} lease_ttl_ms=${deviceLeaseTtlMs} policy=${deviceLimitPolicy}`);
   if (userStore.enabled) {
     logger.info(`multi-user auth enabled, users_file=${usersFilePath}`);
