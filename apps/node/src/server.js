@@ -931,6 +931,8 @@ server.on('stream', async (stream, headers) => {
     const remote = createRemoteConnection(connectHost, port, connectFamily);
     remote.setNoDelay(true);
     remote.setKeepAlive(true, remoteKeepAliveInitialDelayMs);
+    let remoteErrorSuppressed = false;
+    let remoteErrorSuppressReason = '';
 
     const connectTimeoutTimer = setTimeout(() => {
       stats.remoteConnectTimeoutTotal += 1;
@@ -966,6 +968,8 @@ server.on('stream', async (stream, headers) => {
           stats.remoteIdleTimeoutTotal += 1;
           markServerError('retryable');
           logger.warn(`remote idle timeout, trace_id=${traceId}, stream=${streamId}, target=${host}:${port}, mode=${reqPath}, err_class=retryable`);
+          remoteErrorSuppressed = true;
+          remoteErrorSuppressReason = 'remote_idle_timeout';
           remote.destroy(new Error('idle timeout'));
         });
       }
@@ -1030,15 +1034,26 @@ server.on('stream', async (stream, headers) => {
       if (!stream.destroyed) stream.end();
     });
     stream.on('error', closeBoth);
-    remote.on('error', () => {
+    remote.on('error', (err) => {
       releaseConnectInflight();
       stats.remoteConnectErrorTotal += 1;
       markServerError('retryable');
       if (!responded) {
         markCircuitFailure(connectTargetKey, 'connect_error');
       }
-      if (shouldEmitRemoteErrorLog(host, port)) {
-        logger.error(`remote connection error, trace_id=${traceId}, stream=${streamId}, target=${host}:${port}, mode=${reqPath}, err_class=retryable`);
+      if (!remoteErrorSuppressed && shouldEmitRemoteErrorLog(host, port)) {
+        const errCode = String((err && err.code) || '');
+        const errMsg = String((err && err.message) || '');
+        const phase = responded ? 'relay' : 'connect';
+        logger.error(
+          `remote connection error, trace_id=${traceId}, stream=${streamId}, target=${host}:${port}, mode=${reqPath}, phase=${phase}, err_code=${errCode}, err_msg=${errMsg}, err_class=retryable`
+        );
+      } else if (remoteErrorSuppressed && logger.enabled('DEBUG')) {
+        logger.debug(
+          `remote error suppressed, trace_id=${traceId}, stream=${streamId}, target=${host}:${port}, reason=${remoteErrorSuppressReason}, err=${String(
+            (err && (err.code || err.message)) || err
+          )}`
+        );
       }
       if (!responded && !stream.destroyed) {
         stream.respond({ ':status': 502 });
