@@ -13,6 +13,7 @@ import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import java.lang.reflect.Method
 import java.util.concurrent.atomic.AtomicBoolean
 
 class FourPxVpnService : VpnService() {
@@ -108,14 +109,18 @@ class FourPxVpnService : VpnService() {
                 if (configJson.isNotBlank()) {
                     applyTunbridgeConfig(cls, configJson)
                 }
-                val startMethod = cls.getMethod("Start", Int::class.javaPrimitiveType, String::class.java)
-                val ret = startMethod.invoke(null, tunFd, proxy)
+                val startMethod = resolveStartMethod(cls)
+                val ret = if (startMethod.parameterTypes.firstOrNull() == Long::class.javaPrimitiveType || startMethod.parameterTypes.firstOrNull() == Long::class.java) {
+                    startMethod.invoke(null, tunFd.toLong(), proxy)
+                } else {
+                    startMethod.invoke(null, tunFd, proxy)
+                }
                 if (ret is Throwable) {
                     Log.e(TAG, "tunbridge start returned throwable", ret)
                     return false
                 }
                 engineBridgeClass = cls
-                engineStopMethodName = "Stop"
+                engineStopMethodName = resolveStopMethod(cls).name
                 Log.i(TAG, "tun2socks bridge started via $className")
                 return true
             } catch (err: ClassNotFoundException) {
@@ -134,11 +139,45 @@ class FourPxVpnService : VpnService() {
 
     private fun applyTunbridgeConfig(cls: Class<*>, configJson: String) {
         try {
-            val updateMethod = cls.getMethod("UpdateConfig", String::class.java)
+            val updateMethod = resolveUpdateConfigMethod(cls)
             updateMethod.invoke(null, configJson)
         } catch (_: NoSuchMethodException) {
             Log.w(TAG, "tunbridge UpdateConfig not found, continue with defaults")
         }
+    }
+
+    private fun resolveStartMethod(cls: Class<*>): Method {
+        val methods = cls.methods
+        val candidate = methods.firstOrNull { m ->
+            (m.name == "Start" || m.name == "start") &&
+                m.parameterTypes.size == 2 &&
+                m.parameterTypes[1] == String::class.java &&
+                (
+                    m.parameterTypes[0] == Int::class.javaPrimitiveType ||
+                    m.parameterTypes[0] == Int::class.java ||
+                    m.parameterTypes[0] == Long::class.javaPrimitiveType ||
+                    m.parameterTypes[0] == Long::class.java
+                )
+        }
+        return candidate ?: throw NoSuchMethodException("${cls.name}.Start/start(fd, proxy)")
+    }
+
+    private fun resolveUpdateConfigMethod(cls: Class<*>): Method {
+        val methods = cls.methods
+        val candidate = methods.firstOrNull { m ->
+            (m.name == "UpdateConfig" || m.name == "updateConfig") &&
+                m.parameterTypes.size == 1 &&
+                m.parameterTypes[0] == String::class.java
+        }
+        return candidate ?: throw NoSuchMethodException("${cls.name}.UpdateConfig/updateConfig(configJson)")
+    }
+
+    private fun resolveStopMethod(cls: Class<*>): Method {
+        val methods = cls.methods
+        val candidate = methods.firstOrNull { m ->
+            (m.name == "Stop" || m.name == "stop") && m.parameterTypes.isEmpty()
+        }
+        return candidate ?: throw NoSuchMethodException("${cls.name}.Stop/stop()")
     }
 
     private fun stopTun2SocksBridge() {
