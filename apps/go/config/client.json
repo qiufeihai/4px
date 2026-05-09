@@ -17,6 +17,6 @@
   "upstream_disable_compression": true,
   "upstream_h2_read_idle_timeout_ms": 30000,
   "upstream_h2_ping_timeout_ms": 10000,
-  "client_instance_id": "",
+  "device_ticket": "",
   "log_level": "INFO"
 }

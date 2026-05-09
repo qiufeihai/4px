@@ -19,12 +19,12 @@ const maxLogLines = 2000
 var ErrClientNotRunning = errors.New("client is not running")
 
 type ClientStatus struct {
-	Running             bool   `json:"running"`
-	PID                 int    `json:"pid"`
-	ConfigPath          string `json:"configPath"`
-	LastStartedAt       string `json:"lastStartedAt"`
-	LastExitedAt        string `json:"lastExitedAt"`
-	LastError           string `json:"lastError"`
+	Running       bool   `json:"running"`
+	PID           int    `json:"pid"`
+	ConfigPath    string `json:"configPath"`
+	LastStartedAt string `json:"lastStartedAt"`
+	LastExitedAt  string `json:"lastExitedAt"`
+	LastError     string `json:"lastError"`
 }
 
 type App struct {
@@ -54,7 +54,7 @@ func NewApp() *App {
 		repoRoot = filepath.Clean(filepath.Join(goClientDir, ".."))
 	}
 	return &App{
-		packaged:   packaged,
+		packaged:    packaged,
 		repoRoot:    repoRoot,
 		goClientDir: goClientDir,
 		runDir:      runDir,
@@ -360,26 +360,26 @@ func (a *App) readDefaultConfigTemplate() ([]byte, error) {
 	}
 
 	cfg := map[string]any{
-		"socks_listen":                "127.0.0.1:7777",
-		"http_listen":                 "127.0.0.1:7788",
-		"upstream_host":               "your-server-ip",
-		"upstream_port":               6666,
-		"upstream_path":               "/proxy",
-		"server_name":                 "your-domain.com",
-		"auth_token":                  "change-me-strong-token",
-		"reject_unauthorized":         true,
-		"ca_file":                     "",
-		"upstream_connect_timeout_ms": 15000,
-		"response_header_timeout_ms":  30000,
-		"idle_timeout_ms":             300000,
-		"upstream_max_idle_conns":     512,
+		"socks_listen":                     "127.0.0.1:7777",
+		"http_listen":                      "127.0.0.1:7788",
+		"upstream_host":                    "your-server-ip",
+		"upstream_port":                    6666,
+		"upstream_path":                    "/proxy",
+		"server_name":                      "your-domain.com",
+		"auth_token":                       "change-me-strong-token",
+		"reject_unauthorized":              true,
+		"ca_file":                          "",
+		"upstream_connect_timeout_ms":      15000,
+		"response_header_timeout_ms":       30000,
+		"idle_timeout_ms":                  300000,
+		"upstream_max_idle_conns":          512,
 		"upstream_max_idle_conns_per_host": 512,
 		"upstream_max_conns_per_host":      0,
 		"upstream_disable_compression":     true,
 		"upstream_h2_read_idle_timeout_ms": 30000,
 		"upstream_h2_ping_timeout_ms":      10000,
-		"client_instance_id":               "",
-		"log_level":                   "INFO",
+		"device_ticket":                    "",
+		"log_level":                        "INFO",
 	}
 	raw, marshalErr := json.MarshalIndent(cfg, "", "  ")
 	if marshalErr != nil {

@@ -62,6 +62,15 @@ const h2SessionKeepAliveInitialDelayMs = Math.max(
 const defaultMaxDevices = Math.max(1, Math.floor(Number(cfg.defaultMaxDevices || 1)));
 const deviceLeaseTtlMs = Math.max(5000, Math.floor(Number(cfg.deviceLeaseTtlMs || 90000)));
 const deviceLimitPolicy = String(cfg.deviceLimitPolicy || 'reject').trim().toLowerCase() === 'kick_oldest' ? 'kick_oldest' : 'reject';
+const deviceTicketCfg = cfg.deviceTicket && typeof cfg.deviceTicket === 'object' ? cfg.deviceTicket : {};
+const deviceTicketHeader = 'x-device-ticket';
+const deviceTicketEnabled = deviceTicketCfg.enabled !== false;
+const deviceTicketSecret = String(deviceTicketCfg.secret || '').trim();
+const deviceTicketTtlMs = Math.max(
+  60000,
+  Math.floor(Number(deviceTicketCfg.ttlMs || Math.max(deviceLeaseTtlMs * 4, 300000)))
+);
+const deviceTicketRequire = deviceTicketCfg.require === true;
 const deviceLeaseStoreCfg = cfg.deviceLeaseStore && typeof cfg.deviceLeaseStore === 'object' ? cfg.deviceLeaseStore : {};
 const deviceLeaseStoreMode = String(
   deviceLeaseStoreCfg.mode || (deviceLeaseStoreCfg.redis && deviceLeaseStoreCfg.redis.enabled === true ? 'redis' : 'memory')
@@ -498,14 +507,6 @@ function markServerError(kind) {
   stats.retryableErrorTotal += 1;
 }
 
-function normalizeClientInstanceId(value) {
-  const raw = String(value || '').trim();
-  if (raw) {
-    return raw.slice(0, 128);
-  }
-  return 'legacy';
-}
-
 function normalizeRemoteIp(value) {
   const ip = String(value || '').trim();
   if (!ip) return 'unknown';
@@ -515,13 +516,131 @@ function normalizeRemoteIp(value) {
   return ip;
 }
 
-function buildDeviceLeaseKey(clientInstanceId, remoteIp) {
-  const parts = [String(clientInstanceId || '').trim() || 'legacy'];
+function hashText(input, length = 32) {
+  return crypto.createHash('sha256').update(String(input || '')).digest('hex').slice(0, length);
+}
+
+function encodeBase64Url(value) {
+  return Buffer.from(String(value || ''), 'utf8').toString('base64url');
+}
+
+function decodeBase64Url(value) {
+  return Buffer.from(String(value || ''), 'base64url').toString('utf8');
+}
+
+function signDeviceTicketPayload(payloadText) {
+  return crypto.createHmac('sha256', deviceTicketSecret).update(payloadText).digest('base64url');
+}
+
+function peerBindingValue(remoteIp) {
+  if (!deviceLeaseBindPeerIp) return '';
+  return hashText(normalizeRemoteIp(remoteIp), 16);
+}
+
+function issueDeviceTicket(userId, deviceId, remoteIp) {
+  if (!deviceTicketEnabled || !deviceTicketSecret) return '';
+  const nowSec = Math.floor(Date.now() / 1000);
+  const expSec = nowSec + Math.max(60, Math.floor(deviceTicketTtlMs / 1000));
+  const payload = {
+    v: 1,
+    uid: String(userId || ''),
+    did: String(deviceId || ''),
+    iat: nowSec,
+    exp: expSec
+  };
+  const binding = peerBindingValue(remoteIp);
+  if (binding) payload.pb = binding;
+  const payloadText = JSON.stringify(payload);
+  const encodedPayload = encodeBase64Url(payloadText);
+  const signature = signDeviceTicketPayload(encodedPayload);
+  return `${encodedPayload}.${signature}`;
+}
+
+function verifyDeviceTicket(ticketText, userId, remoteIp) {
+  const token = String(ticketText || '').trim();
+  if (!token || !deviceTicketEnabled || !deviceTicketSecret) {
+    return { ok: false, reason: 'empty' };
+  }
+  const dot = token.lastIndexOf('.');
+  if (dot <= 0 || dot >= token.length - 1) {
+    return { ok: false, reason: 'format' };
+  }
+  const encodedPayload = token.slice(0, dot);
+  const signature = token.slice(dot + 1);
+  const expectedSignature = signDeviceTicketPayload(encodedPayload);
+  const a = Buffer.from(signature, 'utf8');
+  const b = Buffer.from(expectedSignature, 'utf8');
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+    return { ok: false, reason: 'signature' };
+  }
+  let payload;
+  try {
+    payload = JSON.parse(decodeBase64Url(encodedPayload));
+  } catch (_) {
+    return { ok: false, reason: 'payload_json' };
+  }
+  const uid = String(payload && payload.uid ? payload.uid : '');
+  const did = String(payload && payload.did ? payload.did : '');
+  const exp = Number(payload && payload.exp ? payload.exp : 0);
+  const nowSec = Math.floor(Date.now() / 1000);
+  if (!uid || !did || !Number.isFinite(exp) || exp <= nowSec) {
+    return { ok: false, reason: 'expired_or_invalid' };
+  }
+  if (uid !== String(userId || '')) {
+    return { ok: false, reason: 'user_mismatch' };
+  }
+  const expectedBinding = peerBindingValue(remoteIp);
+  const actualBinding = String(payload && payload.pb ? payload.pb : '');
+  if (expectedBinding && actualBinding !== expectedBinding) {
+    return { ok: false, reason: 'peer_mismatch' };
+  }
+  return { ok: true, deviceId: did };
+}
+
+function buildDeviceLeaseKey(deviceId, remoteIp) {
+  const parts = [String(deviceId || '').trim() || 'legacy'];
   if (deviceLeaseBindPeerIp) {
     parts.push(`ip=${normalizeRemoteIp(remoteIp)}`);
   }
   const text = parts.join('|');
-  return crypto.createHash('sha256').update(text).digest('hex').slice(0, 32);
+  return hashText(text, 32);
+}
+
+function resolveDeviceIdentity(authUser, headers, remoteIp) {
+  const userId = String(authUser && authUser.id ? authUser.id : '').trim();
+  if (!userId) {
+    return { ok: false, reason: 'empty_user_id' };
+  }
+  const incomingTicket = String(headers && headers[deviceTicketHeader] ? headers[deviceTicketHeader] : '').trim();
+  if (incomingTicket) {
+    const verified = verifyDeviceTicket(incomingTicket, userId, remoteIp);
+    if (verified.ok) {
+      return {
+        ok: true,
+        source: 'ticket',
+        deviceId: verified.deviceId,
+        nextTicket: ''
+      };
+    }
+    return { ok: false, reason: `invalid_ticket_${verified.reason}` };
+  }
+
+  if (deviceTicketRequire) {
+    const bindValue = peerBindingValue(remoteIp);
+    const seed = `${userId}|${bindValue || 'no-bind'}`;
+    const deviceId = `bootstrap-${hashText(seed, 24)}`;
+    const nextTicket = issueDeviceTicket(userId, deviceId, remoteIp);
+    return {
+      ok: true,
+      source: 'bootstrap',
+      deviceId,
+      nextTicket
+    };
+  }
+  if (!incomingTicket) {
+    return { ok: false, reason: 'missing_ticket' };
+  }
+  return { ok: false, reason: 'missing_ticket' };
 }
 
 function calcMaxDevices(authUser) {
@@ -674,9 +793,16 @@ server.on('stream', async (stream, headers) => {
   let firstRemoteDataAtMs = 0;
   let establishWarnLogged = false;
   let authUser = null;
-  let clientInstanceId = '';
+  let deviceTicket = '';
   let deviceLeaseKey = '';
   let leaseAcquired = false;
+  const getAuthResponseHeaders = (statusCode, extraHeaders = {}) => {
+    const headersOut = { ':status': statusCode, ...extraHeaders };
+    if (deviceTicket) {
+      headersOut[deviceTicketHeader] = deviceTicket;
+    }
+    return headersOut;
+  };
   const releaseLeaseOnce = () => {
     if (!leaseAcquired || !authUser || !deviceLeaseKey) return;
     leaseAcquired = false;
@@ -715,20 +841,34 @@ server.on('stream', async (stream, headers) => {
       return;
     }
     authUser = authResult.user;
-    clientInstanceId = normalizeClientInstanceId(headers['x-client-instance-id']);
     const remoteIp = normalizeRemoteIp(stream.session && stream.session.socket && stream.session.socket.remoteAddress);
-    deviceLeaseKey = buildDeviceLeaseKey(clientInstanceId, remoteIp);
+    const deviceIdentity = resolveDeviceIdentity(authUser, headers, remoteIp);
+    if (!deviceIdentity.ok) {
+      stats.authRejectedTotal += 1;
+      markServerError('non-retryable');
+      logger.warn(
+        `reject invalid device identity, trace_id=${traceId}, peer=${remotePeer}, stream=${streamId}, path=${reqPath}, user=${authUser.username}, reason=${deviceIdentity.reason}, err_class=non-retryable`
+      );
+      stream.respond({
+        ':status': 401,
+        'x-auth-reason': 'invalid_device_ticket'
+      });
+      stream.end();
+      return;
+    }
+    deviceTicket = deviceIdentity.nextTicket || '';
+    deviceLeaseKey = buildDeviceLeaseKey(deviceIdentity.deviceId, remoteIp);
     const leaseResult = await touchDeviceLease(authUser, deviceLeaseKey);
     if (!leaseResult.ok) {
       stats.authRejectedTotal += 1;
       markServerError('non-retryable');
       logger.warn(
-        `reject device limit exceeded, trace_id=${traceId}, peer=${remotePeer}, stream=${streamId}, path=${reqPath}, user=${authUser.username}, active_devices=${leaseResult.activeDevices}, max_devices=${leaseResult.maxDevices}, client_id=${clientInstanceId}, policy=${deviceLimitPolicy}, err_class=non-retryable`
+        `reject device limit exceeded, trace_id=${traceId}, peer=${remotePeer}, stream=${streamId}, path=${reqPath}, user=${authUser.username}, active_devices=${leaseResult.activeDevices}, max_devices=${leaseResult.maxDevices}, client_id=${clientInstanceId || '-'}, policy=${deviceLimitPolicy}, identity=${deviceIdentity.source}, err_class=non-retryable`
+        `reject device limit exceeded, trace_id=${traceId}, peer=${remotePeer}, stream=${streamId}, path=${reqPath}, user=${authUser.username}, active_devices=${leaseResult.activeDevices}, max_devices=${leaseResult.maxDevices}, policy=${deviceLimitPolicy}, identity=${deviceIdentity.source}, err_class=non-retryable`
       );
-      stream.respond({
-        ':status': 409,
+      stream.respond(getAuthResponseHeaders(409, {
         'content-type': 'application/json; charset=utf-8'
-      });
+      }));
       stream.end(JSON.stringify({
         ok: false,
         error: 'device_limit_exceeded',
@@ -753,7 +893,7 @@ server.on('stream', async (stream, headers) => {
           `remote circuit reject, trace_id=${traceId}, stream=${streamId}, target=${host}:${port}, remain_ms=${remainMs}, err_class=retryable`
         );
       }
-      stream.respond({ ':status': 503 });
+      stream.respond(getAuthResponseHeaders(503));
       stream.end();
       releaseLeaseOnce();
       if (stats.activeStreams > 0) stats.activeStreams -= 1;
@@ -775,7 +915,7 @@ server.on('stream', async (stream, headers) => {
           )}, err_class=retryable`
         );
       }
-      stream.respond({ ':status': 502 });
+      stream.respond(getAuthResponseHeaders(502));
       stream.end();
       releaseLeaseOnce();
       if (stats.activeStreams > 0) stats.activeStreams -= 1;
@@ -812,7 +952,7 @@ server.on('stream', async (stream, headers) => {
           `remote connect overload reject, trace_id=${traceId}, stream=${streamId}, target=${host}:${port}, inflight=${remoteConnectInFlight}, max_inflight=${remoteConnectMaxInFlight}, waited=${waitedForOverloadRelief}, err_class=retryable`
         );
       }
-      stream.respond({ ':status': 503 });
+      stream.respond(getAuthResponseHeaders(503));
       stream.end();
       releaseLeaseOnce();
       if (stats.activeStreams > 0) stats.activeStreams -= 1;
@@ -826,7 +966,7 @@ server.on('stream', async (stream, headers) => {
           `remote connect overload reject by host, trace_id=${traceId}, stream=${streamId}, target=${host}:${port}, host_inflight=${Number(remoteConnectHostInFlight.get(connectTargetKey) || 0)}, max_host_inflight=${remoteConnectMaxInFlightPerHost}, waited=${waitedForOverloadRelief}, err_class=retryable`
         );
       }
-      stream.respond({ ':status': 503 });
+      stream.respond(getAuthResponseHeaders(503));
       stream.end();
       releaseLeaseOnce();
       if (stats.activeStreams > 0) stats.activeStreams -= 1;
@@ -890,7 +1030,7 @@ server.on('stream', async (stream, headers) => {
           remote.destroy(new Error('idle timeout'));
         });
       }
-      stream.respond({ ':status': 200 });
+      stream.respond(getAuthResponseHeaders(200));
     });
 
     if (streamIdleTimeoutMs > 0) {
@@ -971,7 +1111,7 @@ server.on('stream', async (stream, headers) => {
         );
       }
       if (!responded && !stream.destroyed) {
-        stream.respond({ ':status': 502 });
+        stream.respond(getAuthResponseHeaders(502));
         stream.end();
       }
       closeBoth();
@@ -1001,6 +1141,9 @@ server.on('stream', async (stream, headers) => {
 });
 
 async function initDeviceLeaseStore() {
+  if (deviceTicketEnabled && !deviceTicketSecret) {
+    throw new Error('deviceTicket.secret is required when deviceTicket.enabled=true');
+  }
   const redisCfg = deviceLeaseStoreCfg.redis && typeof deviceLeaseStoreCfg.redis === 'object'
     ? deviceLeaseStoreCfg.redis
     : {};
@@ -1052,6 +1195,9 @@ async function bootstrap() {
     );
     logger.info(
       `remote auto select family enabled=${remoteAutoSelectFamily} attempt_timeout_ms=${remoteAutoSelectFamilyAttemptTimeoutMs}`
+    );
+    logger.info(
+      `device ticket enabled=${deviceTicketEnabled} require=${deviceTicketRequire} ttl_ms=${deviceTicketTtlMs}`
     );
     logger.info(
       `device lease store mode=${deviceLeaseStoreResolvedMode} bind_peer_ip=${deviceLeaseBindPeerIp} default_max_devices=${defaultMaxDevices} lease_ttl_ms=${deviceLeaseTtlMs} policy=${deviceLimitPolicy}`

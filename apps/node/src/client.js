@@ -21,6 +21,7 @@ const metricsIntervalMs = cfg.metricsIntervalMs || 30000;
 const h2SessionPoolSize = Math.max(1, cfg.h2SessionPoolSize || 1);
 const socksListenBacklog = cfg.socksListenBacklog || 4096;
 const upstreamAuthToken = String((cfg.upstream && cfg.upstream.authToken) || '').trim();
+let upstreamDeviceTicket = String((cfg.upstream && cfg.upstream.deviceTicket) || '').trim();
 // Keep runtime behavior stable: this build is proxy-only.
 const upstreamPath = '/proxy';
 
@@ -156,6 +157,9 @@ async function openProxyStream(targetHost, targetPort) {
     'x-target-host': targetHost,
     'x-target-port': String(targetPort)
   };
+  if (upstreamDeviceTicket) {
+    reqHeaders['x-device-ticket'] = upstreamDeviceTicket;
+  }
   const stream = session.request(reqHeaders);
   logger.info(`open stream idx=${poolIndex} target=${targetHost}:${targetPort}`);
 
@@ -176,6 +180,13 @@ async function openProxyStream(targetHost, targetPort) {
 
     stream.once('response', (headers) => {
       clearTimeout(timer);
+      const nextDeviceTicket = String(headers && headers['x-device-ticket'] ? headers['x-device-ticket'] : '').trim();
+      if (nextDeviceTicket && nextDeviceTicket !== upstreamDeviceTicket) {
+        upstreamDeviceTicket = nextDeviceTicket;
+        if (logger.enabled('DEBUG')) {
+          logger.debug('device ticket updated from upstream response');
+        }
+      }
       if (headers[':status'] !== 200) {
         stats.streamRejectedTotal += 1;
         const statusCode = Number(headers[':status'] || 0);

@@ -132,6 +132,10 @@ node bin/4px.js client -c config/client.json
 - `remoteKeepAliveInitialDelayMs`：目标连接 KeepAlive 初始延迟
 - `streamIdleTimeoutMs`：H2 stream 空闲超时（`0` 表示关闭）
 - `defaultMaxDevices` / `deviceLeaseTtlMs` / `deviceLimitPolicy`：设备数限制策略
+- `deviceTicket.enabled`：是否启用服务端签发设备票据（默认 `true`）
+- `deviceTicket.secret`：设备票据签名密钥（必填，生产请使用高强度随机串）
+- `deviceTicket.ttlMs`：设备票据有效期（毫秒）
+- `deviceTicket.require`：是否要求请求走 `x-device-ticket` 设备票据校验（建议 `true`）
 - `deviceLeaseStore.mode`：设备租约存储模式（`memory` 或 `redis`）
 - `deviceLeaseStore.bindPeerIp`：设备识别是否绑定客户端源 IP（默认 `true`，防共享 token 伪造）
 - `deviceLeaseStore.prefix`：Redis 模式下设备租约键前缀
@@ -156,6 +160,7 @@ node bin/4px.js client -c config/client.json
 - `httpListen` / `httpListenBacklog`：本地 HTTP 代理监听
 - `upstream.host` / `upstream.port` / `upstream.path`：远端 server 地址与路径（固定 `/proxy`）
 - `upstream.serverName` / `upstream.authToken` / `upstream.rejectUnauthorized` / `upstream.caFile`：TLS 与鉴权参数
+- `upstream.deviceTicket`：设备票据（可留空；client 会在收到服务端返回后自动更新内存态）
 - `localAuth.enabled` / `localAuth.username` / `localAuth.password`：本地 SOCKS5 认证
 - `logLevel` / `metricsIntervalMs`：日志与指标输出
 - `h2SessionPoolSize`：上游 H2 会话池大小
@@ -254,6 +259,8 @@ docker compose -f docker-compose.redis.yml up -d
   }
 }
 ```
+
+当前实现已废弃 `x-client-instance-id` 路径，仅使用 `x-device-ticket`。
 
 ## 当前能力与限制
 

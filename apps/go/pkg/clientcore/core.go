@@ -4,12 +4,10 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/binary"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -52,15 +50,16 @@ type Config struct {
 	UpstreamDisableCompress  bool   `json:"upstream_disable_compression"`
 	UpstreamH2ReadIdleMS     int    `json:"upstream_h2_read_idle_timeout_ms"`
 	UpstreamH2PingTimeoutMS  int    `json:"upstream_h2_ping_timeout_ms"`
-	ClientInstanceID         string `json:"client_instance_id"`
+	DeviceTicket             string `json:"device_ticket"`
 }
 
 type proxyRuntime struct {
-	cfg         *Config
-	client      *http.Client
-	upstreamURL string
-	authToken   string
-	clientID    string
+	cfg          *Config
+	client       *http.Client
+	upstreamURL  string
+	authToken    string
+	mu           sync.RWMutex
+	deviceTicket string
 }
 
 type MuxRuntimeStats struct {
@@ -83,7 +82,7 @@ var (
 			return &buf
 		},
 	}
-	traceSeq atomic.Uint64
+	traceSeq  atomic.Uint64
 	logSinkMu sync.RWMutex
 	logSink   func(string)
 )
@@ -109,7 +108,7 @@ const defaultClientConfigTemplate = `{
   "upstream_disable_compression": true,
   "upstream_h2_read_idle_timeout_ms": 30000,
   "upstream_h2_ping_timeout_ms": 10000,
-  "client_instance_id": "",
+  "device_ticket": "",
   "log_level": "INFO"
 }
 `
@@ -260,11 +259,11 @@ func RunProxyWithContext(ctx context.Context, cfg *Config) error {
 		return err
 	}
 	rt := &proxyRuntime{
-		cfg:         cfg,
-		client:      client,
-		upstreamURL: fmt.Sprintf("https://%s:%d%s", cfg.UpstreamHost, cfg.UpstreamPort, cfg.UpstreamPath),
-		authToken:   cfg.AuthToken,
-		clientID:    resolveClientInstanceID(cfg),
+		cfg:          cfg,
+		client:       client,
+		upstreamURL:  fmt.Sprintf("https://%s:%d%s", cfg.UpstreamHost, cfg.UpstreamPort, cfg.UpstreamPath),
+		authToken:    cfg.AuthToken,
+		deviceTicket: strings.TrimSpace(cfg.DeviceTicket),
 	}
 
 	socksLn, err := net.Listen("tcp", cfg.SocksListen)
@@ -535,7 +534,6 @@ func runProxy(cfg *Config) error {
 		client:      client,
 		upstreamURL: fmt.Sprintf("https://%s:%d%s", cfg.UpstreamHost, cfg.UpstreamPort, cfg.UpstreamPath),
 		authToken:   cfg.AuthToken,
-		clientID:    resolveClientInstanceID(cfg),
 	}
 
 	socksLn, err := net.Listen("tcp", cfg.SocksListen)
@@ -788,13 +786,33 @@ func handleHTTPProxyConn(conn net.Conn, rt *proxyRuntime) {
 	}
 }
 
+func (rt *proxyRuntime) getDeviceTicket() string {
+	rt.mu.RLock()
+	defer rt.mu.RUnlock()
+	return strings.TrimSpace(rt.deviceTicket)
+}
+
+func (rt *proxyRuntime) updateDeviceTicket(next string) bool {
+	value := strings.TrimSpace(next)
+	if value == "" {
+		return false
+	}
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	if rt.deviceTicket == value {
+		return false
+	}
+	rt.deviceTicket = value
+	return true
+}
+
 func openUpstreamTunnel(ctx context.Context, rt *proxyRuntime, target string) (io.ReadCloser, writeCloserWithErr, error) {
 	host, portStr, splitErr := net.SplitHostPort(target)
 	if splitErr != nil {
 		return nil, nil, splitErr
 	}
 	startAt := time.Now()
-	traceID := nextTraceID(rt.clientID)
+	traceID := nextTraceID()
 	pr, pw := io.Pipe()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, rt.upstreamURL, pr)
@@ -803,7 +821,9 @@ func openUpstreamTunnel(ctx context.Context, rt *proxyRuntime, target string) (i
 		return nil, nil, err
 	}
 	req.Header.Set("x-auth-token", rt.authToken)
-	req.Header.Set("x-client-instance-id", rt.clientID)
+	if ticket := rt.getDeviceTicket(); ticket != "" {
+		req.Header.Set("x-device-ticket", ticket)
+	}
 	req.Header.Set("x-target-host", host)
 	req.Header.Set("x-target-port", portStr)
 	req.Header.Set("x-target", base64.RawURLEncoding.EncodeToString([]byte(target)))
@@ -831,17 +851,18 @@ func openUpstreamTunnel(ctx context.Context, rt *proxyRuntime, target string) (i
 		logf("WARN", "upstream rejected trace_id=%s target=%s status=%d elapsed_ms=%d", traceID, target, resp.StatusCode, elapsedMS)
 		return nil, nil, fmt.Errorf("upstream status=%d", resp.StatusCode)
 	}
+	if nextTicket := strings.TrimSpace(resp.Header.Get("x-device-ticket")); nextTicket != "" {
+		if rt.updateDeviceTicket(nextTicket) {
+			logf("INFO", "device ticket updated from upstream response")
+		}
+	}
 	return resp.Body, pw, nil
 }
 
-func nextTraceID(clientID string) string {
+func nextTraceID() string {
 	seq := traceSeq.Add(1)
 	now := time.Now().UnixNano()
-	normalizedClientID := strings.TrimSpace(clientID)
-	if normalizedClientID == "" {
-		normalizedClientID = "cli"
-	}
-	return fmt.Sprintf("%s-%x-%x", normalizedClientID, uint64(now), seq)
+	return fmt.Sprintf("cli-%x-%x", uint64(now), seq)
 }
 
 func connectionContext(cfg *Config) (context.Context, context.CancelFunc) {
@@ -850,27 +871,6 @@ func connectionContext(cfg *Config) (context.Context, context.CancelFunc) {
 		return context.WithTimeout(context.Background(), timeout)
 	}
 	return context.WithCancel(context.Background())
-}
-
-func resolveClientInstanceID(cfg *Config) string {
-	if cfg == nil {
-		return "cli-unknown"
-	}
-	if id := strings.TrimSpace(cfg.ClientInstanceID); id != "" {
-		return id
-	}
-	hostname, err := os.Hostname()
-	if err != nil || strings.TrimSpace(hostname) == "" {
-		hostname = "unknown-host"
-	}
-	source := strings.Join([]string{
-		hostname,
-		strings.TrimSpace(cfg.UpstreamHost),
-		strings.TrimSpace(cfg.SocksListen),
-		strings.TrimSpace(cfg.HTTPListen),
-	}, "|")
-	sum := sha256.Sum256([]byte(source))
-	return "cli-" + hex.EncodeToString(sum[:8])
 }
 
 func copyPooled(dst io.Writer, src io.Reader) (int64, error) {
