@@ -687,7 +687,8 @@ function buildDeviceLeaseKey(deviceId, remoteIp) {
   return hashText(text, 32);
 }
 
-function resolveDeviceIdentity(authUser, headers, remoteIp) {
+function resolveDeviceIdentity(authUser, headers, remoteIp, options = {}) {
+  const allowBootstrap = options.allowBootstrap !== false;
   const userId = String(authUser && authUser.id ? authUser.id : '').trim();
   if (!userId) {
     return { ok: false, reason: 'empty_user_id' };
@@ -706,7 +707,7 @@ function resolveDeviceIdentity(authUser, headers, remoteIp) {
     return { ok: false, reason: `invalid_ticket_${verified.reason}` };
   }
 
-  if (deviceTicketRequire) {
+  if (deviceTicketRequire && allowBootstrap) {
     const bindValue = peerBindingValue(remoteIp);
     const seed = `${userId}|${bindValue || 'no-bind'}`;
     const deviceId = `bootstrap-${hashText(seed, 24)}`;
@@ -760,6 +761,23 @@ async function touchDeviceLease(authUser, deviceKey) {
     recentDeviceLeaseTouchAt.set(cacheKey, now);
   }
   return result;
+}
+
+async function releaseDeviceLease(authUser, deviceKey) {
+  const uid = String(authUser && authUser.id ? authUser.id : '').trim();
+  if (!uid || !deviceKey || !deviceLeaseStore) return;
+  const cacheKey = `${uid}|${deviceKey}`;
+  recentDeviceLeaseTouchAt.delete(cacheKey);
+  try {
+    await deviceLeaseStore.releaseLease({
+      userId: uid,
+      deviceKey
+    });
+  } catch (err) {
+    logger.warn(
+      `release device lease failed, user=${uid}, err=${String((err && err.message) || err)}`
+    );
+  }
 }
 
 function parseTarget(headers) {
@@ -883,7 +901,8 @@ server.on('stream', async (stream, headers) => {
       return;
     }
     const isProxyV1 = reqMethod === 'POST' && reqPath === '/proxy';
-    if (!isProxyV1) {
+    const isSessionOffline = reqMethod === 'POST' && reqPath === '/session/offline';
+    if (!isProxyV1 && !isSessionOffline) {
       stats.routeRejectedTotal += 1;
       markServerError('non-retryable');
       logger.warn(`reject invalid route, trace_id=${traceId}, peer=${remotePeer}, stream=${streamId}, method=${reqMethod}, path=${reqPath}, err_class=non-retryable`);
@@ -905,7 +924,9 @@ server.on('stream', async (stream, headers) => {
     }
     authUser = authResult.user;
     const remoteIp = normalizeRemoteIp(stream.session && stream.session.socket && stream.session.socket.remoteAddress);
-    const deviceIdentity = resolveDeviceIdentity(authUser, headers, remoteIp);
+    const deviceIdentity = resolveDeviceIdentity(authUser, headers, remoteIp, {
+      allowBootstrap: !isSessionOffline
+    });
     if (!deviceIdentity.ok) {
       stats.authRejectedTotal += 1;
       markServerError('non-retryable');
@@ -921,6 +942,14 @@ server.on('stream', async (stream, headers) => {
     }
     deviceTicket = deviceIdentity.nextTicket || '';
     deviceLeaseKey = buildDeviceLeaseKey(deviceIdentity.deviceId, remoteIp);
+    if (isSessionOffline) {
+      await releaseDeviceLease(authUser, deviceLeaseKey);
+      stream.respond(getAuthResponseHeaders(200, {
+        'content-type': 'application/json; charset=utf-8'
+      }));
+      stream.end(JSON.stringify({ ok: true }));
+      return;
+    }
     const leaseResult = await touchDeviceLease(authUser, deviceLeaseKey);
     if (!leaseResult.ok) {
       stats.authRejectedTotal += 1;

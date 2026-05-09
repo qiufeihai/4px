@@ -264,6 +264,7 @@ func RunProxyWithContext(ctx context.Context, cfg *Config) error {
 		authToken:    cfg.AuthToken,
 		deviceTicket: strings.TrimSpace(cfg.DeviceTicket),
 	}
+	defer rt.sendOfflineSignal()
 
 	socksLn, err := net.Listen("tcp", cfg.SocksListen)
 	if err != nil {
@@ -308,6 +309,36 @@ func RunProxyWithContext(ctx context.Context, cfg *Config) error {
 			return e
 		}
 	}
+}
+
+func (rt *proxyRuntime) sendOfflineSignal() {
+	ticket := rt.getDeviceTicket()
+	if ticket == "" {
+		return
+	}
+	offlineURL := fmt.Sprintf("https://%s:%d/session/offline", rt.cfg.UpstreamHost, rt.cfg.UpstreamPort)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, offlineURL, nil)
+	if err != nil {
+		logf("WARN", "build offline request failed err=%v", err)
+		return
+	}
+	req.Header.Set("x-auth-token", rt.authToken)
+	req.Header.Set("x-device-ticket", ticket)
+
+	resp, err := rt.client.Do(req)
+	if err != nil {
+		logf("WARN", "offline signal failed err=%v", err)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		logf("WARN", "offline signal rejected status=%d", resp.StatusCode)
+		return
+	}
+	logf("INFO", "offline signal sent")
 }
 
 func acceptSOCKSWithContext(ctx context.Context, ln net.Listener, rt *proxyRuntime, errCh chan<- error, tracker *connTracker) {

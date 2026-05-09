@@ -206,6 +206,39 @@ async function openProxyStream(targetHost, targetPort) {
   });
 }
 
+async function sendOfflineSignal() {
+  const ticket = String(upstreamDeviceTicket || '').trim();
+  if (!ticket) return;
+  const poolIndex = pickPoolIndex();
+  const session = await getH2Session(poolIndex);
+  const reqHeaders = {
+    ':method': 'POST',
+    ':path': '/session/offline',
+    'x-auth-token': upstreamAuthToken,
+    'x-device-ticket': ticket
+  };
+  const stream = session.request(reqHeaders);
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      stream.close();
+      reject(new Error('offline response timeout'));
+    }, Math.min(3000, streamResponseTimeoutMs));
+    stream.once('response', (headers) => {
+      clearTimeout(timer);
+      const status = Number(headers[':status'] || 0);
+      if (status !== 200) {
+        reject(new Error(`offline status=${status}`));
+        return;
+      }
+      resolve();
+    });
+    stream.once('error', (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+  });
+}
+
 function bridgeDuplex(left, right, onOverflow) {
   left.on('data', (chunk) => {
     const ok = right.write(chunk);
@@ -355,7 +388,7 @@ function buildOriginRequest(parsed, pendingBody) {
 }
 
 function startHttpProxyIfEnabled() {
-  if (!httpListen) return;
+  if (!httpListen) return null;
 
   const parseListenAddress = (addr) => {
     if (typeof addr !== 'string' || addr.trim() === '') return null;
@@ -496,6 +529,49 @@ function startHttpProxyIfEnabled() {
   httpProxy.listen(listenAddr.port, listenAddr.host, httpListenBacklog, () => {
     logger.info(`HTTP proxy listening on ${listenAddr.host}:${listenAddr.port} backlog=${httpListenBacklog}`);
   });
+  return httpProxy;
 }
 
-startHttpProxyIfEnabled();
+const httpProxyServer = startHttpProxyIfEnabled();
+
+let shutdownInProgress = false;
+async function shutdown(exitCode, reason) {
+  if (shutdownInProgress) return;
+  shutdownInProgress = true;
+  if (reason) {
+    logger.info(`shutdown requested reason=${reason}`);
+  }
+  try {
+    await Promise.race([
+      sendOfflineSignal(),
+      new Promise((resolve) => setTimeout(resolve, 2000))
+    ]);
+  } catch (err) {
+    logger.warn(`offline signal failed: ${String((err && err.message) || err)}`);
+  }
+  try {
+    socksServer.close();
+  } catch (_) {}
+  if (httpProxyServer) {
+    try {
+      httpProxyServer.close();
+    } catch (_) {}
+  }
+  for (const slot of sessionPool) {
+    if (slot && slot.session && !slot.session.closed && !slot.session.destroyed) {
+      try {
+        slot.session.close();
+      } catch (_) {}
+    }
+    slot.session = null;
+    slot.pending = null;
+  }
+  process.exit(exitCode);
+}
+
+process.on('SIGINT', () => {
+  void shutdown(0, 'SIGINT');
+});
+process.on('SIGTERM', () => {
+  void shutdown(0, 'SIGTERM');
+});
