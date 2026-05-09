@@ -7,6 +7,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
@@ -25,7 +26,8 @@ class FourPxVpnService : VpnService() {
             ACTION_CONNECT -> {
                 val socksHost = intent.getStringExtra(EXTRA_SOCKS_HOST) ?: DEFAULT_SOCKS_HOST
                 val socksPort = intent.getIntExtra(EXTRA_SOCKS_PORT, DEFAULT_SOCKS_PORT)
-                startVpn(socksHost, socksPort)
+                val configJson = intent.getStringExtra(EXTRA_TUNBRIDGE_CONFIG_JSON).orEmpty()
+                startVpn(socksHost, socksPort, configJson)
             }
             ACTION_DISCONNECT -> stopVpn()
             else -> Unit
@@ -43,7 +45,7 @@ class FourPxVpnService : VpnService() {
         super.onRevoke()
     }
 
-    private fun startVpn(socksHost: String, socksPort: Int) {
+    private fun startVpn(socksHost: String, socksPort: Int, configJson: String) {
         if (running.get()) return
         val builder = Builder()
             .setSession("4px Mobile")
@@ -51,12 +53,17 @@ class FourPxVpnService : VpnService() {
             .addAddress("10.8.0.2", 32)
             .addDnsServer("1.1.1.1")
             .addRoute("0.0.0.0", 0)
+        try {
+            // Avoid forwarding this app's own upstream sockets back into VPN.
+            builder.addDisallowedApplication(packageName)
+        } catch (_: PackageManager.NameNotFoundException) {
+        }
 
         val established = builder.establish() ?: return
         vpnInterface = established
         startForeground(NOTIFICATION_ID, buildNotification())
         val proxy = "socks5://$socksHost:$socksPort"
-        val started = startTun2SocksBridge(established.fd, proxy)
+        val started = startTun2SocksBridge(established.fd, proxy, configJson)
         if (!started) {
             Log.e(TAG, "start tun2socks bridge failed, proxy=$proxy")
             try {
@@ -86,7 +93,7 @@ class FourPxVpnService : VpnService() {
         stopSelf()
     }
 
-    private fun startTun2SocksBridge(tunFd: Int, proxy: String): Boolean {
+    private fun startTun2SocksBridge(tunFd: Int, proxy: String, configJson: String): Boolean {
         // Expected gomobile API:
         // package tunbridge
         // func Start(fd int, proxy string) error
@@ -98,6 +105,9 @@ class FourPxVpnService : VpnService() {
         for (className in candidates) {
             try {
                 val cls = Class.forName(className)
+                if (configJson.isNotBlank()) {
+                    applyTunbridgeConfig(cls, configJson)
+                }
                 val startMethod = cls.getMethod("Start", Int::class.javaPrimitiveType, String::class.java)
                 val ret = startMethod.invoke(null, tunFd, proxy)
                 if (ret is Throwable) {
@@ -120,6 +130,15 @@ class FourPxVpnService : VpnService() {
         }
         Log.e(TAG, "tun2socks bridge class not found, ensure tun2socks.aar is present")
         return false
+    }
+
+    private fun applyTunbridgeConfig(cls: Class<*>, configJson: String) {
+        try {
+            val updateMethod = cls.getMethod("UpdateConfig", String::class.java)
+            updateMethod.invoke(null, configJson)
+        } catch (_: NoSuchMethodException) {
+            Log.w(TAG, "tunbridge UpdateConfig not found, continue with defaults")
+        }
     }
 
     private fun stopTun2SocksBridge() {
@@ -176,14 +195,21 @@ class FourPxVpnService : VpnService() {
         private const val NOTIFICATION_ID = 1001
         private const val EXTRA_SOCKS_HOST = "extra_socks_host"
         private const val EXTRA_SOCKS_PORT = "extra_socks_port"
+        private const val EXTRA_TUNBRIDGE_CONFIG_JSON = "extra_tunbridge_config_json"
         private const val DEFAULT_SOCKS_HOST = "127.0.0.1"
         private const val DEFAULT_SOCKS_PORT = 1080
 
-        fun start(context: Context, socksHost: String = DEFAULT_SOCKS_HOST, socksPort: Int = DEFAULT_SOCKS_PORT) {
+        fun start(
+            context: Context,
+            socksHost: String = DEFAULT_SOCKS_HOST,
+            socksPort: Int = DEFAULT_SOCKS_PORT,
+            tunbridgeConfigJson: String = ""
+        ) {
             val intent = Intent(context, FourPxVpnService::class.java)
                 .setAction(ACTION_CONNECT)
                 .putExtra(EXTRA_SOCKS_HOST, socksHost)
                 .putExtra(EXTRA_SOCKS_PORT, socksPort)
+                .putExtra(EXTRA_TUNBRIDGE_CONFIG_JSON, tunbridgeConfigJson)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(intent)
             } else {

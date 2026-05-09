@@ -12,6 +12,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import com.google.android.material.checkbox.MaterialCheckBox
 import com.google.android.material.textfield.TextInputEditText
+import org.json.JSONObject
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
@@ -178,7 +179,17 @@ class MainActivity : AppCompatActivity() {
                         }
                     )
                 )
-                FourPxVpnService.start(this)
+                val runningConfig = config.copy(
+                    deviceTicket = if (result.nextDeviceTicket.isNotBlank()) {
+                        result.nextDeviceTicket
+                    } else {
+                        config.deviceTicket
+                    }
+                )
+                FourPxVpnService.start(
+                    this,
+                    tunbridgeConfigJson = buildTunbridgeConfigJson(runningConfig)
+                )
                 statusText.text = getString(R.string.status_vpn_started)
                 setState(UiState.CONNECTED)
             }
@@ -232,6 +243,18 @@ class MainActivity : AppCompatActivity() {
     private fun showError(message: String) {
         statusText.text = getString(R.string.status_error, message)
         Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
+    }
+
+    private fun buildTunbridgeConfigJson(config: AppConfig): String {
+        return JSONObject()
+            .put("upstreamHost", config.host)
+            .put("upstreamPort", config.port)
+            .put("authToken", config.authToken)
+            .put("deviceTicket", config.deviceTicket)
+            .put("rejectUnauthorized", !config.insecureTls)
+            .put("serverName", config.host)
+            .put("socksListen", "127.0.0.1:1080")
+            .toString()
     }
 
     private fun setState(state: UiState) {

@@ -1,30 +1,47 @@
 package tunbridge
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/qiufeihai/4px/apps/go/pkg/clientcore"
 	_ "github.com/xjasonlyu/tun2socks/v2/dns"
 	"github.com/xjasonlyu/tun2socks/v2/engine"
 )
 
 var (
-	mu        sync.Mutex
-	running   bool
-	lastErr   string
-	startedAt int64
-	lastCfg   Config
+	mu          sync.Mutex
+	running     bool
+	lastErr     string
+	startedAt   int64
+	lastCfg     Config
+	proxyCancel context.CancelFunc
+	proxyDone   chan error
 )
 
 type Config struct {
-	// Proxy is a full proxy URL, e.g. socks5://127.0.0.1:1080
+	// Proxy is optional. If empty, it uses socks5:// + SocksListen.
 	Proxy string `json:"proxy"`
 	// MTU is the tun MTU.
 	MTU int `json:"mtu"`
 	// LogLevel matches tun2socks levels: debug|info|warn|error|silent
 	LogLevel string `json:"logLevel"`
+	// Local socks endpoint exposed by embedded clientcore.
+	SocksListen string `json:"socksListen"`
+	// Upstream auth and endpoint for 4px server.
+	UpstreamHost       string `json:"upstreamHost"`
+	UpstreamPort       int    `json:"upstreamPort"`
+	AuthToken          string `json:"authToken"`
+	RejectUnauthorized bool   `json:"rejectUnauthorized"`
+	ServerName         string `json:"serverName"`
+	DeviceTicket       string `json:"deviceTicket"`
 }
 
 func normalizeConfig(in Config) Config {
@@ -35,6 +52,18 @@ func normalizeConfig(in Config) Config {
 	if out.LogLevel == "" {
 		out.LogLevel = "warn"
 	}
+	if out.SocksListen == "" {
+		out.SocksListen = "127.0.0.1:1080"
+	}
+	if out.UpstreamPort <= 0 {
+		out.UpstreamPort = 6666
+	}
+	if out.ServerName == "" {
+		out.ServerName = out.UpstreamHost
+	}
+	if !strings.HasPrefix(out.Proxy, "socks5://") && out.Proxy != "" {
+		out.Proxy = ""
+	}
 	return out
 }
 
@@ -44,6 +73,76 @@ func setLastErrorLocked(err error) {
 		return
 	}
 	lastErr = err.Error()
+}
+
+func makeProxyURL(cfg Config) string {
+	if cfg.Proxy != "" {
+		return cfg.Proxy
+	}
+	return "socks5://" + cfg.SocksListen
+}
+
+func runEmbeddedProxyLocked(cfg Config) error {
+	if cfg.UpstreamHost == "" {
+		return errors.New("tunbridge: empty upstreamHost")
+	}
+	if cfg.AuthToken == "" {
+		return errors.New("tunbridge: empty authToken")
+	}
+	runCfg := &clientcore.Config{
+		SocksListen:        cfg.SocksListen,
+		HTTPListen:         "",
+		UpstreamHost:       cfg.UpstreamHost,
+		UpstreamPort:       cfg.UpstreamPort,
+		UpstreamPath:       "/proxy",
+		ServerName:         cfg.ServerName,
+		AuthToken:          cfg.AuthToken,
+		RejectUnauthorized: cfg.RejectUnauthorized,
+		CAFile:             "",
+		DeviceTicket:       cfg.DeviceTicket,
+		LogLevel:           "WARN",
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- clientcore.RunProxyWithContext(ctx, runCfg)
+	}()
+	// Wait briefly until local socks listener is ready.
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) {
+		conn, err := net.DialTimeout("tcp", cfg.SocksListen, 150*time.Millisecond)
+		if err == nil {
+			_ = conn.Close()
+			proxyCancel = cancel
+			proxyDone = done
+			return nil
+		}
+		time.Sleep(120 * time.Millisecond)
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			return fmt.Errorf("embedded proxy start failed: %w", err)
+		}
+	default:
+	}
+	return fmt.Errorf("embedded proxy not ready on %s", cfg.SocksListen)
+}
+
+func stopEmbeddedProxyLocked() {
+	if proxyCancel == nil {
+		return
+	}
+	proxyCancel()
+	if proxyDone != nil {
+		select {
+		case <-proxyDone:
+		case <-time.After(2 * time.Second):
+		}
+	}
+	proxyCancel = nil
+	proxyDone = nil
 }
 
 // Start boots tun2socks with Android TUN fd and upstream SOCKS5 proxy URL.
@@ -60,13 +159,18 @@ func Start(fd int, proxy string) {
 	if fd <= 0 {
 		panic("tunbridge: invalid fd")
 	}
-	if proxy == "" {
-		panic("tunbridge: empty proxy")
+	cfg := normalizeConfig(lastCfg)
+	if proxy != "" {
+		cfg.Proxy = proxy
 	}
-	cfg := normalizeConfig(Config{Proxy: proxy})
+	if err := runEmbeddedProxyLocked(cfg); err != nil {
+		setLastErrorLocked(err)
+		panic(err.Error())
+	}
+	proxyURL := makeProxyURL(cfg)
 	key := &engine.Key{
 		Device:   fmt.Sprintf("fd://%d", fd),
-		Proxy:    cfg.Proxy,
+		Proxy:    proxyURL,
 		MTU:      cfg.MTU,
 		LogLevel: cfg.LogLevel,
 	}
@@ -76,6 +180,7 @@ func Start(fd int, proxy string) {
 	engine.Start()
 	running = true
 	startedAt = time.Now().UnixMilli()
+	cfg.Proxy = proxyURL
 	lastCfg = cfg
 }
 
@@ -84,9 +189,11 @@ func Stop() {
 	mu.Lock()
 	defer mu.Unlock()
 	if !running {
+		stopEmbeddedProxyLocked()
 		return
 	}
 	engine.Stop()
+	stopEmbeddedProxyLocked()
 	running = false
 }
 
@@ -142,4 +249,42 @@ func GetLastError() string {
 	mu.Lock()
 	defer mu.Unlock()
 	return lastErr
+}
+
+func init() {
+	lastCfg = normalizeConfig(Config{
+		RejectUnauthorized: true,
+	})
+}
+
+func SetDeviceTicket(ticket string) {
+	mu.Lock()
+	defer mu.Unlock()
+	lastCfg.DeviceTicket = strings.TrimSpace(ticket)
+}
+
+func SetUpstream(host string, port int, token string, rejectUnauthorized bool, serverName string) {
+	mu.Lock()
+	defer mu.Unlock()
+	lastCfg.UpstreamHost = strings.TrimSpace(host)
+	if port > 0 {
+		lastCfg.UpstreamPort = port
+	}
+	lastCfg.AuthToken = strings.TrimSpace(token)
+	lastCfg.RejectUnauthorized = rejectUnauthorized
+	lastCfg.ServerName = strings.TrimSpace(serverName)
+}
+
+func SetSocksListen(host string, port int) {
+	mu.Lock()
+	defer mu.Unlock()
+	h := strings.TrimSpace(host)
+	if h == "" {
+		h = "127.0.0.1"
+	}
+	p := port
+	if p <= 0 {
+		p = 1080
+	}
+	lastCfg.SocksListen = net.JoinHostPort(h, strconv.Itoa(p))
 }
