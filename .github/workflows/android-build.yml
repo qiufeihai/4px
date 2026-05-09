@@ -7,14 +7,6 @@ on:
         description: "Version label (e.g. v0.6.0)"
         required: true
         default: "v0.0.0"
-  push:
-    branches: [main]
-    paths:
-      - "apps/mobile/android/**"
-      - "apps/go/pkg/tunbridge/**"
-      - "apps/go/go.mod"
-      - "apps/go/go.sum"
-      - ".github/workflows/android-build.yml"
 
 jobs:
   build-android:
@@ -53,6 +45,7 @@ jobs:
 
       - name: Install gomobile
         shell: bash
+        working-directory: apps/go
         run: |
           set -euo pipefail
           go get golang.org/x/mobile/bind
