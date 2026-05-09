@@ -20,7 +20,7 @@
     "require": true
   },
   "deviceLeaseStore": {
-    "mode": "memory",
+    "mode": "redis",
     "bindPeerIp": true,
     "prefix": "4px:device_lease",
     "redis": {
