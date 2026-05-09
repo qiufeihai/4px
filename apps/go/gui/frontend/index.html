@@ -685,6 +685,18 @@
     }
 
     function bindEvents() {
+      // Avoid OS/input-method auto-capitalization for technical fields such as host/token/json.
+      Object.values(fields).forEach((el) => {
+        if (!el || !el.setAttribute) return;
+        const tag = String(el.tagName || "").toUpperCase();
+        if (tag === "INPUT" || tag === "TEXTAREA") {
+          el.setAttribute("autocapitalize", "off");
+          el.setAttribute("autocorrect", "off");
+          el.setAttribute("autocomplete", "off");
+          el.setAttribute("spellcheck", "false");
+        }
+      });
+
       document.getElementById("btnLoad").addEventListener("click", loadConfig);
       document.getElementById("btnSave").addEventListener("click", saveConfig);
       document.getElementById("btnStart").addEventListener("click", startClient);
