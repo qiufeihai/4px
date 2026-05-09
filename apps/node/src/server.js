@@ -4,10 +4,12 @@ const net = require('net');
 const path = require('path');
 const http2 = require('http2');
 const { monitorEventLoopDelay } = require('perf_hooks');
+const crypto = require('crypto');
 const { loadConfig, resolvePath } = require('./config');
 const { createLogger } = require('./logger');
 const { UserStore } = require('./user_store');
 const { startAdminServer } = require('./admin/server');
+const { createDeviceLeaseStore } = require('./device_lease_store');
 
 const cfg = loadConfig(path.resolve(__dirname, '../config/server.json'));
 const key = fs.readFileSync(resolvePath(cfg.__configDir, cfg.tls.keyFile));
@@ -57,11 +59,16 @@ const h2SessionKeepAliveInitialDelayMs = Math.max(
   0,
   Number(cfg.h2SessionKeepAliveInitialDelayMs || 30000)
 );
-const userRuntimeTrackingEnabled = cfg.userRuntimeTrackingEnabled === true;
-const userActivityUpdateIntervalMs = Math.max(1000, Number(cfg.userActivityUpdateIntervalMs || 60000));
 const defaultMaxDevices = Math.max(1, Math.floor(Number(cfg.defaultMaxDevices || 1)));
 const deviceLeaseTtlMs = Math.max(5000, Math.floor(Number(cfg.deviceLeaseTtlMs || 90000)));
 const deviceLimitPolicy = String(cfg.deviceLimitPolicy || 'reject').trim().toLowerCase() === 'kick_oldest' ? 'kick_oldest' : 'reject';
+const deviceLeaseStoreCfg = cfg.deviceLeaseStore && typeof cfg.deviceLeaseStore === 'object' ? cfg.deviceLeaseStore : {};
+const deviceLeaseStoreMode = String(
+  deviceLeaseStoreCfg.mode || (deviceLeaseStoreCfg.redis && deviceLeaseStoreCfg.redis.enabled === true ? 'redis' : 'memory')
+).trim().toLowerCase() === 'redis'
+  ? 'redis'
+  : 'memory';
+const deviceLeaseBindPeerIp = deviceLeaseStoreCfg.bindPeerIp !== false;
 const usersFilePath = cfg.authUsersFile ? resolvePath(cfg.__configDir, cfg.authUsersFile) : '';
 const staticAuthTokens = Array.isArray(cfg.authTokens)
   ? cfg.authTokens.map((v) => String(v || '').trim()).filter((v) => v)
@@ -73,8 +80,9 @@ const userStore = new UserStore({
   reloadIntervalMs: cfg.authUsersReloadIntervalMs || 5000,
   defaultMaxDevices
 });
-const userRuntime = new Map();
-const userDeviceLeases = new Map();
+let deviceLeaseStore = null;
+let deviceLeaseStoreResolvedMode = 'memory';
+let closeDeviceLeaseStore = async () => {};
 const slowEstablishLastWarnAt = new Map();
 const slowEstablishSummary = new Map();
 const remoteErrorLastLogAt = new Map();
@@ -490,55 +498,30 @@ function markServerError(kind) {
   stats.retryableErrorTotal += 1;
 }
 
-function getUserRuntimeRecord(authUser) {
-  const id = String(authUser && authUser.id ? authUser.id : '').trim() || 'unknown';
-  if (!userRuntime.has(id)) {
-    userRuntime.set(id, {
-      userId: id,
-      username: String(authUser && authUser.username ? authUser.username : ''),
-      activeConnections: 0,
-      activeDevices: 0,
-      lastSeenAtMs: 0,
-      lastActiveAtMs: 0
-    });
-  }
-  const record = userRuntime.get(id);
-  if (authUser && authUser.username) {
-    record.username = String(authUser.username);
-  }
-  return record;
-}
-
-function normalizeClientInstanceId(value, remotePeer) {
+function normalizeClientInstanceId(value) {
   const raw = String(value || '').trim();
   if (raw) {
     return raw.slice(0, 128);
   }
-  const remoteIp = String(remotePeer || '').split(':')[0] || 'unknown';
-  return `legacy:${remoteIp}`;
+  return 'legacy';
 }
 
-function pruneUserDeviceLeases(userId, now) {
-  const uid = String(userId || '').trim();
-  if (!uid || !userDeviceLeases.has(uid)) return;
-  const leases = userDeviceLeases.get(uid);
-  leases.forEach((lastSeenAtMs, clientId) => {
-    if (now - Number(lastSeenAtMs || 0) > deviceLeaseTtlMs) {
-      leases.delete(clientId);
-    }
-  });
-  if (leases.size === 0) {
-    userDeviceLeases.delete(uid);
+function normalizeRemoteIp(value) {
+  const ip = String(value || '').trim();
+  if (!ip) return 'unknown';
+  if (ip.startsWith('::ffff:')) {
+    return ip.slice('::ffff:'.length);
   }
+  return ip;
 }
 
-function getUserDeviceMap(userId) {
-  const uid = String(userId || '').trim();
-  if (!uid) return null;
-  if (!userDeviceLeases.has(uid)) {
-    userDeviceLeases.set(uid, new Map());
+function buildDeviceLeaseKey(clientInstanceId, remoteIp) {
+  const parts = [String(clientInstanceId || '').trim() || 'legacy'];
+  if (deviceLeaseBindPeerIp) {
+    parts.push(`ip=${normalizeRemoteIp(remoteIp)}`);
   }
-  return userDeviceLeases.get(uid);
+  const text = parts.join('|');
+  return crypto.createHash('sha256').update(text).digest('hex').slice(0, 32);
 }
 
 function calcMaxDevices(authUser) {
@@ -549,100 +532,33 @@ function calcMaxDevices(authUser) {
   return defaultMaxDevices;
 }
 
-function touchDeviceLease(authUser, clientId) {
+async function touchDeviceLease(authUser, deviceKey) {
   const uid = String(authUser && authUser.id ? authUser.id : '').trim();
-  if (!uid || !clientId) return { ok: true, activeDevices: 0, maxDevices: calcMaxDevices(authUser) };
-  const now = Date.now();
-  pruneUserDeviceLeases(uid, now);
-  const leases = getUserDeviceMap(uid);
+  if (!uid || !deviceKey) return { ok: true, activeDevices: 0, maxDevices: calcMaxDevices(authUser) };
   const maxDevices = calcMaxDevices(authUser);
-  if (leases.has(clientId)) {
-    leases.set(clientId, now);
-    return { ok: true, activeDevices: leases.size, maxDevices };
+  if (!deviceLeaseStore) {
+    return { ok: false, activeDevices: 0, maxDevices };
   }
-  if (leases.size < maxDevices) {
-    leases.set(clientId, now);
-    return { ok: true, activeDevices: leases.size, maxDevices };
-  }
-  if (deviceLimitPolicy === 'kick_oldest') {
-    let oldestId = '';
-    let oldestSeen = Number.POSITIVE_INFINITY;
-    leases.forEach((lastSeenAtMs, existingClientId) => {
-      const t = Number(lastSeenAtMs || 0);
-      if (t < oldestSeen) {
-        oldestSeen = t;
-        oldestId = existingClientId;
-      }
-    });
-    if (oldestId) {
-      leases.delete(oldestId);
-      leases.set(clientId, now);
-      return { ok: true, activeDevices: leases.size, maxDevices };
-    }
-  }
-  return { ok: false, activeDevices: leases.size, maxDevices };
-}
-
-function releaseDeviceLease(authUser, clientId) {
-  const uid = String(authUser && authUser.id ? authUser.id : '').trim();
-  if (!uid || !clientId || !userDeviceLeases.has(uid)) return;
-  const leases = userDeviceLeases.get(uid);
-  leases.delete(clientId);
-  if (leases.size === 0) {
-    userDeviceLeases.delete(uid);
-  }
-}
-
-function markUserSeen(authUser) {
-  if (!userRuntimeTrackingEnabled) return;
-  const record = getUserRuntimeRecord(authUser);
-  record.lastSeenAtMs = Date.now();
-  pruneUserDeviceLeases(record.userId, record.lastSeenAtMs);
-  record.activeDevices = userDeviceLeases.get(record.userId)?.size || 0;
-}
-
-function markUserConnectionOpen(authUser) {
-  if (!userRuntimeTrackingEnabled) return;
-  const record = getUserRuntimeRecord(authUser);
-  record.activeConnections += 1;
-  const now = Date.now();
-  record.lastSeenAtMs = now;
-  record.lastActiveAtMs = now;
-}
-
-function markUserConnectionActive(authUser, nowMs) {
-  if (!userRuntimeTrackingEnabled) return;
-  const record = getUserRuntimeRecord(authUser);
-  const now = Number.isFinite(Number(nowMs)) ? Number(nowMs) : Date.now();
-  if (!record.lastActiveAtMs || now - record.lastActiveAtMs >= userActivityUpdateIntervalMs) {
-    record.lastActiveAtMs = now;
-  }
-}
-
-function markUserConnectionClose(authUser) {
-  if (!userRuntimeTrackingEnabled) return;
-  const record = getUserRuntimeRecord(authUser);
-  if (record.activeConnections > 0) record.activeConnections -= 1;
-  record.lastActiveAtMs = Date.now();
-}
-
-function getUserRuntimeStats() {
-  if (!userRuntimeTrackingEnabled) return {};
-  const now = Date.now();
-  userDeviceLeases.forEach((_, userId) => pruneUserDeviceLeases(userId, now));
-  const out = {};
-  userRuntime.forEach((value, key) => {
-    out[key] = {
-      userId: value.userId,
-      username: value.username,
-      activeConnections: value.activeConnections,
-      activeDevices: userDeviceLeases.get(key)?.size || 0,
-      online: value.activeConnections > 0,
-      lastSeenAt: value.lastSeenAtMs ? new Date(value.lastSeenAtMs).toISOString() : null,
-      lastActiveAt: value.lastActiveAtMs ? new Date(value.lastActiveAtMs).toISOString() : null
-    };
+  return deviceLeaseStore.acquireLease({
+    userId: uid,
+    deviceKey,
+    maxDevices,
+    policy: deviceLimitPolicy
   });
-  return out;
+}
+
+function releaseDeviceLease(authUser, deviceKey) {
+  const uid = String(authUser && authUser.id ? authUser.id : '').trim();
+  if (!uid || !deviceKey || !deviceLeaseStore) return;
+  void deviceLeaseStore.releaseLease({
+    userId: uid,
+    deviceKey
+  });
+}
+
+async function getUserActiveDeviceStats(userIds = []) {
+  if (!deviceLeaseStore) return {};
+  return deviceLeaseStore.getActiveDeviceCountsByUsers(userIds);
 }
 
 function parseTarget(headers) {
@@ -759,11 +675,12 @@ server.on('stream', async (stream, headers) => {
   let establishWarnLogged = false;
   let authUser = null;
   let clientInstanceId = '';
+  let deviceLeaseKey = '';
   let leaseAcquired = false;
   const releaseLeaseOnce = () => {
-    if (!leaseAcquired || !authUser || !clientInstanceId) return;
+    if (!leaseAcquired || !authUser || !deviceLeaseKey) return;
     leaseAcquired = false;
-    releaseDeviceLease(authUser, clientInstanceId);
+    releaseDeviceLease(authUser, deviceLeaseKey);
   };
   try {
     const reqMethod = String(headers[':method'] || '');
@@ -798,9 +715,10 @@ server.on('stream', async (stream, headers) => {
       return;
     }
     authUser = authResult.user;
-    markUserSeen(authUser);
-    clientInstanceId = normalizeClientInstanceId(headers['x-client-instance-id'], remotePeer);
-    const leaseResult = touchDeviceLease(authUser, clientInstanceId);
+    clientInstanceId = normalizeClientInstanceId(headers['x-client-instance-id']);
+    const remoteIp = normalizeRemoteIp(stream.session && stream.session.socket && stream.session.socket.remoteAddress);
+    deviceLeaseKey = buildDeviceLeaseKey(clientInstanceId, remoteIp);
+    const leaseResult = await touchDeviceLease(authUser, deviceLeaseKey);
     if (!leaseResult.ok) {
       stats.authRejectedTotal += 1;
       markServerError('non-retryable');
@@ -820,17 +738,7 @@ server.on('stream', async (stream, headers) => {
       return;
     }
     leaseAcquired = true;
-    markUserSeen(authUser);
     const { host, port } = parseTarget(headers);
-    let nextUserActiveUpdateAtMs = 0;
-    const markActiveFast = () => {
-      if (!userRuntimeTrackingEnabled) return;
-      const now = Date.now();
-      if (now < nextUserActiveUpdateAtMs) return;
-      nextUserActiveUpdateAtMs = now + userActivityUpdateIntervalMs;
-      markUserConnectionActive(authUser, now);
-    };
-    markUserConnectionOpen(authUser);
     if (logger.enabled('INFO')) {
       logger.info(`stream accepted, trace_id=${traceId}, peer=${remotePeer}, stream=${streamId}, user=${authUser.username}, target=${host}:${port}`);
     }
@@ -847,7 +755,6 @@ server.on('stream', async (stream, headers) => {
       }
       stream.respond({ ':status': 503 });
       stream.end();
-      markUserConnectionClose(authUser);
       releaseLeaseOnce();
       if (stats.activeStreams > 0) stats.activeStreams -= 1;
       return;
@@ -870,7 +777,6 @@ server.on('stream', async (stream, headers) => {
       }
       stream.respond({ ':status': 502 });
       stream.end();
-      markUserConnectionClose(authUser);
       releaseLeaseOnce();
       if (stats.activeStreams > 0) stats.activeStreams -= 1;
       return;
@@ -893,7 +799,6 @@ server.on('stream', async (stream, headers) => {
         }
       }
       if (stream.destroyed) {
-        markUserConnectionClose(authUser);
         releaseLeaseOnce();
         if (stats.activeStreams > 0) stats.activeStreams -= 1;
         return;
@@ -909,7 +814,6 @@ server.on('stream', async (stream, headers) => {
       }
       stream.respond({ ':status': 503 });
       stream.end();
-      markUserConnectionClose(authUser);
       releaseLeaseOnce();
       if (stats.activeStreams > 0) stats.activeStreams -= 1;
       return;
@@ -924,7 +828,6 @@ server.on('stream', async (stream, headers) => {
       }
       stream.respond({ ':status': 503 });
       stream.end();
-      markUserConnectionClose(authUser);
       releaseLeaseOnce();
       if (stats.activeStreams > 0) stats.activeStreams -= 1;
       return;
@@ -998,7 +901,6 @@ server.on('stream', async (stream, headers) => {
     }
 
     stream.on('data', (chunk) => {
-      markActiveFast();
       const ok = remote.write(chunk);
       if (!ok) stream.pause();
       if (remote.writableLength > maxBufferedBytes) {
@@ -1024,7 +926,6 @@ server.on('stream', async (stream, headers) => {
           );
         }
       }
-      markActiveFast();
       const ok = stream.write(chunk);
       if (!ok) remote.pause();
       if (stream.writableLength > maxBufferedBytes) {
@@ -1077,7 +978,6 @@ server.on('stream', async (stream, headers) => {
     });
     stream.on('close', () => {
       if (stats.activeStreams > 0) stats.activeStreams -= 1;
-      markUserConnectionClose(authUser);
       releaseLeaseOnce();
       if (!remote.destroyed) remote.destroy();
     });
@@ -1100,37 +1000,78 @@ server.on('stream', async (stream, headers) => {
   }
 });
 
-server.listen(cfg.listenPort, cfg.listenHost, listenBacklog, () => {
-  logger.info(`H2 server listening on ${cfg.listenHost}:${cfg.listenPort}`);
-  logger.info(`log level=${logger.level}`);
-  logger.info(`listen backlog=${listenBacklog}`);
-  logger.info(
-    `h2 settings header_table_size=${h2HeaderTableSize} initial_window_size=${h2InitialWindowSize} max_concurrent_streams=${h2MaxConcurrentStreams} max_frame_size=${h2MaxFrameSize} max_header_list_size=${h2MaxHeaderListSize}`
-  );
-  logger.info(
-    `h2 session socket no_delay=${h2SessionNoDelay} keep_alive=${h2SessionKeepAlive} keep_alive_initial_delay_ms=${h2SessionKeepAliveInitialDelayMs} supported=${h2SessionSocketTuneSupported}`
-  );
-  logger.info('proxy routes v1=/proxy');
-  logger.info(`user runtime tracking enabled=${userRuntimeTrackingEnabled}`);
-  logger.info(`slow establish enabled=${slowEstablishEnabled} threshold_ms=${establishWarnThresholdMs} min_interval_ms=${establishWarnMinIntervalMs} top_n=${slowEstablishTopN}`);
-  logger.info(`remote error log min interval ms=${remoteErrorLogMinIntervalMs}`);
-  logger.info(`remote connect max in flight=${remoteConnectMaxInFlight}`);
-  logger.info(`remote connect max in flight per host=${remoteConnectMaxInFlightPerHost}`);
-  logger.info(`remote connect overload wait ms=${remoteConnectOverloadWaitMs} max_waiters=${remoteConnectOverloadMaxWaiters}`);
-  logger.info(`remote connect overload log min interval ms=${remoteConnectOverloadLogMinIntervalMs}`);
-  logger.info(
-    `remote dns cache enabled=${remoteDnsCacheEnabled} prefer_ipv4=${remoteDnsPreferIPv4} ttl_ms=${remoteDnsCacheTtlMs} negative_ttl_ms=${remoteDnsNegativeCacheTtlMs} max_entries=${remoteDnsCacheMaxEntries}`
-  );
-  logger.info(
-    `remote circuit enabled=${remoteCircuitEnabled} failure_threshold=${remoteCircuitFailureThreshold} open_ms=${remoteCircuitOpenMs} log_min_interval_ms=${remoteCircuitLogMinIntervalMs} max_targets=${remoteCircuitMaxTargets}`
-  );
-  logger.info(
-    `remote auto select family enabled=${remoteAutoSelectFamily} attempt_timeout_ms=${remoteAutoSelectFamilyAttemptTimeoutMs}`
-  );
-  logger.info(`device limit default_max_devices=${defaultMaxDevices} lease_ttl_ms=${deviceLeaseTtlMs} policy=${deviceLimitPolicy}`);
-  if (userStore.enabled) {
-    logger.info(`multi-user auth enabled, users_file=${usersFilePath}`);
+async function initDeviceLeaseStore() {
+  const redisCfg = deviceLeaseStoreCfg.redis && typeof deviceLeaseStoreCfg.redis === 'object'
+    ? deviceLeaseStoreCfg.redis
+    : {};
+  const initialized = await createDeviceLeaseStore({
+    mode: deviceLeaseStoreMode,
+    ttlMs: deviceLeaseTtlMs,
+    prefix: String(deviceLeaseStoreCfg.prefix || '4px:device_lease'),
+    redisUrl: redisCfg.url,
+    redisPassword: redisCfg.password,
+    redisDatabase: redisCfg.database,
+    redisConnectTimeoutMs: redisCfg.connectTimeoutMs,
+    logger
+  });
+  deviceLeaseStore = initialized.store;
+  deviceLeaseStoreResolvedMode = initialized.mode || 'memory';
+  closeDeviceLeaseStore = typeof initialized.close === 'function' ? initialized.close : async () => {};
+}
+
+async function bootstrap() {
+  try {
+    await initDeviceLeaseStore();
+  } catch (err) {
+    logger.error(`init device lease store failed: ${String((err && err.message) || err)}`);
+    process.exit(1);
   }
-  logger.info(`static auth tokens enabled, count=${staticAuthTokens.length}`);
-  startAdminServer({ cfg, userStore, logger, getUserRuntimeStats });
+
+  server.listen(cfg.listenPort, cfg.listenHost, listenBacklog, () => {
+    logger.info(`H2 server listening on ${cfg.listenHost}:${cfg.listenPort}`);
+    logger.info(`log level=${logger.level}`);
+    logger.info(`listen backlog=${listenBacklog}`);
+    logger.info(
+      `h2 settings header_table_size=${h2HeaderTableSize} initial_window_size=${h2InitialWindowSize} max_concurrent_streams=${h2MaxConcurrentStreams} max_frame_size=${h2MaxFrameSize} max_header_list_size=${h2MaxHeaderListSize}`
+    );
+    logger.info(
+      `h2 session socket no_delay=${h2SessionNoDelay} keep_alive=${h2SessionKeepAlive} keep_alive_initial_delay_ms=${h2SessionKeepAliveInitialDelayMs} supported=${h2SessionSocketTuneSupported}`
+    );
+    logger.info('proxy routes v1=/proxy');
+    logger.info(`slow establish enabled=${slowEstablishEnabled} threshold_ms=${establishWarnThresholdMs} min_interval_ms=${establishWarnMinIntervalMs} top_n=${slowEstablishTopN}`);
+    logger.info(`remote error log min interval ms=${remoteErrorLogMinIntervalMs}`);
+    logger.info(`remote connect max in flight=${remoteConnectMaxInFlight}`);
+    logger.info(`remote connect max in flight per host=${remoteConnectMaxInFlightPerHost}`);
+    logger.info(`remote connect overload wait ms=${remoteConnectOverloadWaitMs} max_waiters=${remoteConnectOverloadMaxWaiters}`);
+    logger.info(`remote connect overload log min interval ms=${remoteConnectOverloadLogMinIntervalMs}`);
+    logger.info(
+      `remote dns cache enabled=${remoteDnsCacheEnabled} prefer_ipv4=${remoteDnsPreferIPv4} ttl_ms=${remoteDnsCacheTtlMs} negative_ttl_ms=${remoteDnsNegativeCacheTtlMs} max_entries=${remoteDnsCacheMaxEntries}`
+    );
+    logger.info(
+      `remote circuit enabled=${remoteCircuitEnabled} failure_threshold=${remoteCircuitFailureThreshold} open_ms=${remoteCircuitOpenMs} log_min_interval_ms=${remoteCircuitLogMinIntervalMs} max_targets=${remoteCircuitMaxTargets}`
+    );
+    logger.info(
+      `remote auto select family enabled=${remoteAutoSelectFamily} attempt_timeout_ms=${remoteAutoSelectFamilyAttemptTimeoutMs}`
+    );
+    logger.info(
+      `device lease store mode=${deviceLeaseStoreResolvedMode} bind_peer_ip=${deviceLeaseBindPeerIp} default_max_devices=${defaultMaxDevices} lease_ttl_ms=${deviceLeaseTtlMs} policy=${deviceLimitPolicy}`
+    );
+    if (userStore.enabled) {
+      logger.info(`multi-user auth enabled, users_file=${usersFilePath}`);
+    }
+    logger.info(`static auth tokens enabled, count=${staticAuthTokens.length}`);
+    startAdminServer({ cfg, userStore, logger, getUserActiveDeviceStats });
+  });
+}
+
+process.on('SIGTERM', async () => {
+  await closeDeviceLeaseStore();
+  process.exit(0);
 });
+
+process.on('SIGINT', async () => {
+  await closeDeviceLeaseStore();
+  process.exit(0);
+});
+
+void bootstrap();

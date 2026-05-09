@@ -11,6 +11,9 @@
     "start:client": "node src/client.js -c config/client.json",
     "start": "node bin/4px.js"
   },
+  "dependencies": {
+    "redis": "^4.7.0"
+  },
   "engines": {
     "node": ">=16"
   }

@@ -10,11 +10,21 @@
   ],
   "authUsersFile": "server.users.json",
   "authUsersReloadIntervalMs": 5000,
-  "userRuntimeTrackingEnabled": false,
-  "userActivityUpdateIntervalMs": 60000,
   "defaultMaxDevices": 1,
   "deviceLeaseTtlMs": 90000,
   "deviceLimitPolicy": "reject",
+  "deviceLeaseStore": {
+    "mode": "memory",
+    "bindPeerIp": true,
+    "prefix": "4px:device_lease",
+    "redis": {
+      "enabled": true,
+      "url": "redis://127.0.0.1:6379",
+      "password": "CHANGE_ME_REDIS_PASSWORD",
+      "database": 0,
+      "connectTimeoutMs": 5000
+    }
+  },
   "admin": {
     "enabled": true,
     "listenHost": "0.0.0.0",

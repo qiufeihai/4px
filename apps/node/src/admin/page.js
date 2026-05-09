@@ -141,7 +141,7 @@ function renderAdminPage(users) {
     </div>
     <table>
       <thead>
-        <tr><th>ID</th><th>用户名</th><th>在线</th><th>连接数</th><th>活跃设备</th><th>设备上限</th><th>最近活跃</th><th>AuthToken</th><th>启用</th><th>到期时间</th><th>备注</th><th>操作</th></tr>
+        <tr><th>ID</th><th>用户名</th><th>活跃设备</th><th>设备上限</th><th>AuthToken</th><th>启用</th><th>到期时间</th><th>备注</th><th>操作</th></tr>
       </thead>
       <tbody id="user-rows"></tbody>
     </table>
@@ -512,11 +512,8 @@ function renderAdminPage(users) {
         return '<tr>'
           + '<td>' + u.id + '</td>'
           + '<td><input data-field="username" data-id="' + u.id + '" value="' + (u.username || '') + '" /></td>'
-          + '<td>' + (u.online ? '在线' : '离线') + '</td>'
-          + '<td>' + Number(u.activeConnections || 0) + '</td>'
           + '<td>' + Number(u.activeDevices || 0) + '</td>'
           + '<td><input data-field="maxDevices" data-id="' + u.id + '" type="number" min="1" step="1" value="' + Number(u.maxDevices || 1) + '" /></td>'
-          + '<td>' + formatDateTime(u.lastActiveAt || u.lastSeenAt) + '</td>'
           + '<td><input data-field="authToken" data-id="' + u.id + '" value="' + (u.authToken || '') + '" /></td>'
           + '<td><input type="checkbox" data-field="enabled" data-id="' + u.id + '" ' + checked + ' /></td>'
           + '<td><input type="datetime-local" data-field="expireAt" data-id="' + u.id + '" value="' + expireAt + '" /></td>'

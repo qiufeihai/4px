@@ -1,0 +1,30 @@
+version: "3.9"
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: 4px-redis
+    restart: unless-stopped
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --requirepass
+      - CHANGE_ME_REDIS_PASSWORD
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test:
+        - CMD
+        - redis-cli
+        - -a
+        - CHANGE_ME_REDIS_PASSWORD
+        - ping
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  redis_data:

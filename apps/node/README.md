@@ -95,8 +95,6 @@ node bin/4px.js client -c config/client.json
 - `authTokens`：静态鉴权 token 列表（可与多用户并行生效）
 - `authUsersFile`：多用户文件路径（启用后按用户 `authToken` 鉴权）
 - `authUsersReloadIntervalMs`：用户文件热加载间隔
-- `userRuntimeTrackingEnabled`：是否启用用户在线态运行时统计（默认 `false`；开启可在管理页查看在线/活跃状态）
-- `userActivityUpdateIntervalMs`：用户“最近活跃”时间的采样更新间隔（毫秒，默认 `60000`）
 - `admin.enabled` / `admin.listenHost` / `admin.listenPort` / `admin.token`：Web 管理端配置
 - `admin.serviceControl.enabled` / `admin.serviceControl.systemdService` / `admin.serviceControl.useSudo`：Web 触发 systemd 重启配置
 - `admin.clientConfigExport.*`：用户 client 配置导出默认值（`upstreamHost/upstreamPort/serverName/rejectUnauthorized/caFile`）
@@ -133,6 +131,11 @@ node bin/4px.js client -c config/client.json
 - `remoteIdleTimeoutMs`：目标连接空闲超时（`0` 表示关闭）
 - `remoteKeepAliveInitialDelayMs`：目标连接 KeepAlive 初始延迟
 - `streamIdleTimeoutMs`：H2 stream 空闲超时（`0` 表示关闭）
+- `defaultMaxDevices` / `deviceLeaseTtlMs` / `deviceLimitPolicy`：设备数限制策略
+- `deviceLeaseStore.mode`：设备租约存储模式（`memory` 或 `redis`）
+- `deviceLeaseStore.bindPeerIp`：设备识别是否绑定客户端源 IP（默认 `true`，防共享 token 伪造）
+- `deviceLeaseStore.prefix`：Redis 模式下设备租约键前缀
+- `deviceLeaseStore.redis.*`：Redis 连接参数（`enabled/url/password/database/connectTimeoutMs`）
 
 ### 性能参数（建议重点）
 
@@ -145,6 +148,7 @@ node bin/4px.js client -c config/client.json
 说明：
 - 若运行环境 IPv6 不可达，建议保持 `remoteDnsPreferIPv4=true`，可显著降低 `ENETUNREACH`。
 - `h2SessionNoDelay` / `h2SessionKeepAlive` 在部分 Node 运行时可能受限，代码会自动禁用并继续运行。
+- 若使用 `USE_CLUSTER=1` 且需要严格防作弊，建议启用 `deviceLeaseStore.mode=redis`，避免多 worker 内存状态分裂导致设备上限失真。
 
 ### `client.json`
 
@@ -219,6 +223,38 @@ sudo systemctl restart 4px
 journalctl -u 4px -f
 ```
 
+## Redis（设备租约，集群防绕过）
+
+当你启用 `USE_CLUSTER=1` 且要求严格设备数限制时，建议将 `deviceLeaseStore.mode` 设为 `redis`。
+
+项目已提供 Redis compose 文件：
+
+```bash
+cd apps/node
+docker compose -f docker-compose.redis.yml up -d
+```
+
+默认文件中使用了示例密码 `CHANGE_ME_REDIS_PASSWORD`，上线前请务必替换。
+
+`server.json` 推荐配置：
+
+```json
+{
+  "deviceLeaseStore": {
+    "mode": "redis",
+    "bindPeerIp": true,
+    "prefix": "4px:device_lease",
+    "redis": {
+      "enabled": true,
+      "url": "redis://127.0.0.1:6379",
+      "password": "CHANGE_ME_REDIS_PASSWORD",
+      "database": 0,
+      "connectTimeoutMs": 5000
+    }
+  }
+}
+```
+
 ## 当前能力与限制
 
 - 支持 SOCKS5 `CONNECT`
@@ -257,7 +293,7 @@ http://127.0.0.1:6688/admin
 - `server.users.json` 中用户凭证字段为 `users[].authToken`。
 - 用户管理支持导出备份与导入恢复（JSON 文件，导入默认合并，可选覆盖；导入前会显示预览）。
 - 用户管理支持快捷续期：可按天/周/月指定续期时长并一键生效。
-- 用户管理列表支持在线状态、当前连接数、最近活跃时间展示。
+- 用户管理列表支持活跃设备数展示（用于设备上限策略排障）。
 - 用户管理支持按用户导出 `client.json`（自动注入服务端地址、端口和该用户 `authToken`）。
 - 新增/编辑用户后会写入 `server.users.json`，无需重启 server。
 - 用户被禁用或到期后，新连接会被拒绝（已建立连接不强制断开）。

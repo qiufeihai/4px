@@ -192,8 +192,8 @@ function startAdminServer(options) {
   const cfg = options.cfg || {};
   const userStore = options.userStore;
   const logger = options.logger;
-  const getUserRuntimeStats = typeof options.getUserRuntimeStats === 'function'
-    ? options.getUserRuntimeStats
+  const getUserActiveDeviceStats = typeof options.getUserActiveDeviceStats === 'function'
+    ? options.getUserActiveDeviceStats
     : () => ({});
   const admin = cfg.admin || {};
   if (admin.enabled !== true) return;
@@ -377,16 +377,12 @@ function startAdminServer(options) {
         return;
       }
       if (req.method === 'GET' && url.pathname === '/api/users') {
-        const runtime = getUserRuntimeStats();
-        const users = userStore.list().map((item) => {
-          const extra = runtime[item.id] || {};
+        const baseUsers = userStore.list();
+        const activeDevices = await getUserActiveDeviceStats(baseUsers.map((item) => item.id));
+        const users = baseUsers.map((item) => {
           return {
             ...item,
-            online: extra.online === true,
-            activeConnections: Number(extra.activeConnections || 0),
-            activeDevices: Number(extra.activeDevices || 0),
-            lastSeenAt: extra.lastSeenAt || null,
-            lastActiveAt: extra.lastActiveAt || null
+            activeDevices: Number(activeDevices[item.id] || 0)
           };
         });
         sendJson(res, 200, { ok: true, users });
