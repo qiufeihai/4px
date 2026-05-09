@@ -863,7 +863,6 @@ server.on('stream', async (stream, headers) => {
       stats.authRejectedTotal += 1;
       markServerError('non-retryable');
       logger.warn(
-        `reject device limit exceeded, trace_id=${traceId}, peer=${remotePeer}, stream=${streamId}, path=${reqPath}, user=${authUser.username}, active_devices=${leaseResult.activeDevices}, max_devices=${leaseResult.maxDevices}, client_id=${clientInstanceId || '-'}, policy=${deviceLimitPolicy}, identity=${deviceIdentity.source}, err_class=non-retryable`
         `reject device limit exceeded, trace_id=${traceId}, peer=${remotePeer}, stream=${streamId}, path=${reqPath}, user=${authUser.username}, active_devices=${leaseResult.activeDevices}, max_devices=${leaseResult.maxDevices}, policy=${deviceLimitPolicy}, identity=${deviceIdentity.source}, err_class=non-retryable`
       );
       stream.respond(getAuthResponseHeaders(409, {
