@@ -41,5 +41,11 @@ dependencies {
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("com.google.android.material:material:1.12.0")
     implementation("androidx.constraintlayout:constraintlayout:2.1.4")
-}
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
+    // Optional local tun2socks artifact. Drop AAR at app/libs/tun2socks.aar.
+    val tun2socksAar = file("libs/tun2socks.aar")
+    if (tun2socksAar.exists()) {
+        implementation(files(tun2socksAar))
+    }
+}

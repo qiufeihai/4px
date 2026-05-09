@@ -32,6 +32,7 @@ apps/go/gui/build/appicon.iconset/
 apps/node/benchmarks/
 
 # Android
+.android-sdk/
 apps/mobile/android/.gradle/
 apps/mobile/android/local.properties
 apps/mobile/android/build/

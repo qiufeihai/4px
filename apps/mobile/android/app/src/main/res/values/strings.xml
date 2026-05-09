@@ -2,8 +2,37 @@
 <resources>
     <string name="app_name">4px Mobile</string>
     <string name="title_main">4px Android Client</string>
-    <string name="subtitle_main">Initial skeleton. VPN pipeline will be added next.</string>
-    <string name="btn_connect">Connect (Coming Soon)</string>
-    <string name="status_placeholder">Status: Idle</string>
+    <string name="subtitle_main">MVP: config + connect/disconnect + offline signal</string>
+    <string name="label_server_host">Server Host</string>
+    <string name="label_server_port">Server Port</string>
+    <string name="label_auth_token">Auth Token</string>
+    <string name="label_device_ticket">Device Ticket</string>
+    <string name="label_probe_host">Probe Target Host</string>
+    <string name="label_probe_port">Probe Target Port</string>
+    <string name="hint_server_host">example.com</string>
+    <string name="hint_server_port">6666</string>
+    <string name="hint_auth_token">your-auth-token</string>
+    <string name="hint_device_ticket">auto-issued from server</string>
+    <string name="hint_probe_host">example.com</string>
+    <string name="hint_probe_port">443</string>
+    <string name="label_insecure_tls">Ignore TLS certificate validation</string>
+    <string name="btn_save">Save Config</string>
+    <string name="btn_connect">Connect</string>
+    <string name="btn_disconnect">Disconnect</string>
+    <string name="status_idle">Status: Idle</string>
+    <string name="status_connecting">Status: Connecting…</string>
+    <string name="status_connected">Status: Connected (probe success)</string>
+    <string name="status_disconnecting">Status: Disconnecting…</string>
+    <string name="status_disconnected">Status: Disconnected (offline sent)</string>
+    <string name="status_error">Status: Error - %1$s</string>
+    <string name="status_vpn_permission_required">Status: Waiting for VPN permission</string>
+    <string name="status_vpn_started">Status: VPN started</string>
+    <string name="toast_saved">Config saved</string>
+    <string name="error_vpn_permission_denied">VPN permission denied</string>
+    <string name="error_invalid_host">Host is required</string>
+    <string name="error_invalid_port">Port must be 1-65535</string>
+    <string name="error_invalid_token">Auth token is required</string>
+    <string name="error_invalid_probe_host">Probe host is required</string>
+    <string name="error_invalid_probe_port">Probe port must be 1-65535</string>
+    <string name="error_ticket_required">Device ticket is required for disconnect</string>
 </resources>
-

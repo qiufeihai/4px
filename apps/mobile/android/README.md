@@ -1,19 +1,40 @@
-# 4px Android Client (Skeleton)
+# 4px Android Client (MVP)
 
-This is the initial Android project skeleton for the 4px mobile client.
+This is the Android MVP client for 4px.
 
 ## Current status
 
-- Android app module is created
-- Main screen includes placeholder UI
-- VPN integration is not implemented yet
-- Development is temporarily paused until Android toolchain is installed
+- Config form implemented: host/port/auth token/device ticket/probe target/TLS option
+- Config persistence implemented via SharedPreferences
+- Connect probe implemented using `POST /proxy` with `x-target-host/x-target-port`
+- Explicit disconnect implemented using `POST /session/offline`
+- Device ticket auto-update implemented from response header `x-device-ticket`
+- `VpnService` lifecycle is wired (permission + foreground service start/stop)
+- Current VPN route is a safe skeleton route (`198.18.0.0/15`), full data-plane forwarding is not implemented yet
 
-## Open in Android Studio
+## Open project
 
-1. Open Android Studio
+1. Open Android Studio (or use Gradle CLI)
 2. Open folder: `apps/mobile/android`
 3. Wait for Gradle sync
+
+## tun2socks local artifact
+
+For full data-plane forwarding, place a local tun2socks artifact at:
+
+- `apps/mobile/android/app/libs/tun2socks.aar`
+
+The Gradle config auto-loads this file if it exists.
+Current VPN service expects a gomobile bridge class:
+
+- `go.tunbridge.Tunbridge` (preferred gomobile default)
+- `tunbridge.Tunbridge` (fallback)
+- static methods:
+  - `Start(fd: Int, proxy: String)`
+  - `Stop()`
+  - `UpdateConfig(configJson: String)`
+  - `GetStats(): String`
+  - `GetLastError(): String`
 
 ## Build debug APK
 
@@ -34,16 +55,12 @@ Expected output:
 
 ## Next implementation tasks
 
-- Add configuration storage (host/port/token/path)
-- Add connect/disconnect service state
-- Implement `VpnService` + tunnel pipeline
-- Integrate proxy path by default
+- Implement full packet forwarding pipeline (TUN <-> upstream `/proxy`)
+- Add diagnostics/log panel for in-app troubleshooting
+- Add import/export config and secure secret storage
+- Add background service lifecycle integration
 
-## Resume notes for future AI
+## Notes
 
-- This folder is the accepted baseline; do not recreate project scaffolding.
-- Priority path after environment is ready:
-  1. Implement config model + local storage
-  2. Add connect/disconnect state and status UI
-  3. Wire `VpnService` and route traffic through local tunnel
-  4. Add diagnostics/log panel for quick field troubleshooting
+- This MVP validates server compatibility, ticket lifecycle, and VPN permission/service wiring.
+- "Connect" starts VPN service after probe success, but full traffic forwarding is pending.
