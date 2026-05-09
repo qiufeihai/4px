@@ -12,6 +12,12 @@ function toIsoOrNull(input) {
   return d.toISOString();
 }
 
+function toExpireAtMs(expireAt) {
+  if (!expireAt) return 0;
+  const ms = Date.parse(expireAt);
+  return Number.isFinite(ms) ? ms : 0;
+}
+
 function normalizeMaxDevices(value, fallback = 1) {
   const n = Number(value);
   if (!Number.isFinite(n)) return Math.max(1, Math.floor(fallback || 1));
@@ -24,14 +30,28 @@ function normalizeUser(raw, index, defaultMaxDevices = 1) {
   const username = String(raw.username || '').trim();
   const authToken = String(raw.authToken || '').trim();
   if (!id || !username || !authToken) return null;
+  const expireAt = toIsoOrNull(raw.expireAt);
   return {
     id,
     username,
     authToken,
     enabled: raw.enabled !== false,
-    expireAt: toIsoOrNull(raw.expireAt),
+    expireAt,
+    expireAtMs: toExpireAtMs(expireAt),
     note: String(raw.note || '').trim(),
     maxDevices: normalizeMaxDevices(raw.maxDevices, defaultMaxDevices)
+  };
+}
+
+function toStoredUser(user) {
+  return {
+    id: user.id,
+    username: user.username,
+    authToken: user.authToken,
+    enabled: user.enabled !== false,
+    expireAt: user.expireAt || null,
+    note: String(user.note || '').trim(),
+    maxDevices: normalizeMaxDevices(user.maxDevices, 1)
   };
 }
 
@@ -84,16 +104,22 @@ class UserStore {
     this.authTokens = Array.isArray(options.authTokens)
       ? options.authTokens.map((v) => String(v || '').trim()).filter((v) => v)
       : [];
+    this.authTokenSet = new Set(this.authTokens);
     this.reloadIntervalMs = Math.max(1000, Number(options.reloadIntervalMs || 5000));
     this.logger = options.logger;
     this.defaultMaxDevices = normalizeMaxDevices(options.defaultMaxDevices, 1);
     this.users = [];
+    this.userByToken = new Map();
     this.lastMtimeMs = 0;
     this.lastReloadAt = 0;
+    this.reloadInProgress = false;
     this.enabled = Boolean(this.filePath);
     if (this.enabled) {
       this.ensureFile();
       this.reload(true);
+      setInterval(() => {
+        this.reloadAsync(false);
+      }, this.reloadIntervalMs).unref();
     }
   }
 
@@ -101,13 +127,6 @@ class UserStore {
     if (!this.filePath) return;
     if (fs.existsSync(this.filePath)) return;
     fs.writeFileSync(this.filePath, JSON.stringify({ users: [] }, null, 2), 'utf8');
-  }
-
-  maybeReload() {
-    if (!this.enabled || !this.filePath) return;
-    const now = Date.now();
-    if (now - this.lastReloadAt < this.reloadIntervalMs) return;
-    this.reload(false);
   }
 
   reload(force) {
@@ -123,6 +142,7 @@ class UserStore {
       const users = parseUsersPayload(parsed, this.defaultMaxDevices);
       assertUniqueUsers(users);
       this.users = users;
+      this.rebuildUserIndexes();
       this.lastMtimeMs = stat.mtimeMs;
       this.lastReloadAt = Date.now();
       this.logger.info(`loaded users file: ${this.filePath}, users=${this.users.length}`);
@@ -132,11 +152,38 @@ class UserStore {
     }
   }
 
+  async reloadAsync(force) {
+    if (!this.enabled || !this.filePath) return;
+    if (this.reloadInProgress) return;
+    this.reloadInProgress = true;
+    try {
+      const stat = await fs.promises.stat(this.filePath);
+      if (!force && stat.mtimeMs <= this.lastMtimeMs) {
+        this.lastReloadAt = Date.now();
+        return;
+      }
+      const text = await fs.promises.readFile(this.filePath, 'utf8');
+      const parsed = JSON.parse(text);
+      const users = parseUsersPayload(parsed, this.defaultMaxDevices);
+      assertUniqueUsers(users);
+      this.users = users;
+      this.rebuildUserIndexes();
+      this.lastMtimeMs = stat.mtimeMs;
+      this.lastReloadAt = Date.now();
+      this.logger.info(`loaded users file: ${this.filePath}, users=${this.users.length}`);
+    } catch (err) {
+      this.lastReloadAt = Date.now();
+      this.logger.error(`failed load users file: ${this.filePath}`, err.message);
+    } finally {
+      this.reloadInProgress = false;
+    }
+  }
+
   save() {
     if (!this.enabled || !this.filePath) {
       throw new Error('users file is not enabled');
     }
-    fs.writeFileSync(this.filePath, JSON.stringify({ users: this.users }, null, 2), 'utf8');
+    fs.writeFileSync(this.filePath, JSON.stringify({ users: this.users.map((item) => toStoredUser(item)) }, null, 2), 'utf8');
     try {
       const stat = fs.statSync(this.filePath);
       this.lastMtimeMs = stat.mtimeMs;
@@ -144,6 +191,16 @@ class UserStore {
       this.logger.warn(`failed stat users file after save: ${this.filePath}`, err.message);
     }
     this.lastReloadAt = Date.now();
+  }
+
+  rebuildUserIndexes() {
+    const next = new Map();
+    for (const user of this.users) {
+      if (user && user.authToken) {
+        next.set(user.authToken, user);
+      }
+    }
+    this.userByToken = next;
   }
 
   createToken() {
@@ -155,18 +212,17 @@ class UserStore {
     if (!value) return { ok: false, reason: 'missing_token' };
 
     if (this.enabled) {
-      this.maybeReload();
-      const user = this.users.find((item) => item.authToken === value);
+      const user = this.userByToken.get(value);
       if (user) {
         if (!user.enabled) return { ok: false, reason: 'disabled_user', user };
-        if (user.expireAt && Date.now() > Date.parse(user.expireAt)) {
+        if (user.expireAtMs > 0 && Date.now() > user.expireAtMs) {
           return { ok: false, reason: 'expired_user', user };
         }
         return { ok: true, mode: 'multi_user', user };
       }
     }
 
-    if (this.authTokens.includes(value)) {
+    if (this.authTokenSet.has(value)) {
       return {
         ok: true,
         mode: 'static',
@@ -177,8 +233,7 @@ class UserStore {
   }
 
   list() {
-    this.maybeReload();
-    return this.users.map((item) => ({ ...item }));
+    return this.users.map((item) => ({ ...toStoredUser(item) }));
   }
 
   upsert(input) {
@@ -190,10 +245,11 @@ class UserStore {
     const authToken = String(input.authToken || '').trim() || this.createToken();
     const enabled = input.enabled !== false;
     const expireAt = input.expireAt ? toIsoOrNull(input.expireAt) : null;
+    const expireAtMs = toExpireAtMs(expireAt);
     const maxDevices = normalizeMaxDevices(input.maxDevices, this.defaultMaxDevices);
     if (input.expireAt && !expireAt) throw new Error('expireAt is invalid');
 
-    const next = { id, username, authToken, enabled, expireAt, note, maxDevices };
+    const next = { id, username, authToken, enabled, expireAt, expireAtMs, note, maxDevices };
     const index = this.users.findIndex((item) => item.id === id);
     const snapshot = this.users.slice();
     if (index >= 0) {
@@ -203,8 +259,9 @@ class UserStore {
     }
     assertUniqueUsers(snapshot);
     this.users = snapshot;
+    this.rebuildUserIndexes();
     this.save();
-    return { ...next };
+    return { ...toStoredUser(next) };
   }
 
   setEnabled(id, enabled) {
@@ -214,7 +271,7 @@ class UserStore {
     if (index < 0) throw new Error('user not found');
     this.users[index].enabled = Boolean(enabled);
     this.save();
-    return { ...this.users[index] };
+    return { ...toStoredUser(this.users[index]) };
   }
 
   regenerateToken(id) {
@@ -229,8 +286,9 @@ class UserStore {
     } while (this.users.some((item, i) => i !== index && item.authToken === nextToken));
 
     this.users[index].authToken = nextToken;
+    this.rebuildUserIndexes();
     this.save();
-    return { ...this.users[index] };
+    return { ...toStoredUser(this.users[index]) };
   }
 
   remove(id) {
@@ -240,14 +298,16 @@ class UserStore {
     if (index < 0) throw new Error('user not found');
     const removed = this.users[index];
     this.users.splice(index, 1);
+    this.rebuildUserIndexes();
     this.save();
-    return { ...removed };
+    return { ...toStoredUser(removed) };
   }
 
   replaceAll(nextUsers) {
     if (!this.enabled) throw new Error('multi-user mode is disabled');
     const normalized = normalizeUsersInput(nextUsers, this.defaultMaxDevices);
     this.users = normalized;
+    this.rebuildUserIndexes();
     this.save();
     return this.list();
   }
@@ -298,6 +358,7 @@ class UserStore {
     const normalized = normalizeUsersInput(nextUsers, this.defaultMaxDevices);
     if (importMode === 'replace') {
       this.users = normalized;
+      this.rebuildUserIndexes();
       this.save();
       return { ...preview };
     }
@@ -309,6 +370,7 @@ class UserStore {
     const merged = Array.from(nextById.values());
     assertUniqueUsers(merged);
     this.users = merged;
+    this.rebuildUserIndexes();
     this.save();
     return { ...preview };
   }

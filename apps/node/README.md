@@ -5,7 +5,7 @@ Node 版本的 `4px` 负责核心数据面，包含：
 - `client`：本地入口，提供 `SOCKS5` 与 `HTTP` 代理，再转发到远端 `server`。
 - `bin/4px.js`：统一 CLI 入口，支持自动初始化默认配置。
 
-当前默认主路径：`/proxy`。`proxy-v2` 仅保留历史性能记录，不作为现行默认方案。
+当前默认主路径：`/proxy`。
 
 ## 核心特性
 
@@ -95,35 +95,30 @@ node bin/4px.js client -c config/client.json
 - `authTokens`：静态鉴权 token 列表（可与多用户并行生效）
 - `authUsersFile`：多用户文件路径（启用后按用户 `authToken` 鉴权）
 - `authUsersReloadIntervalMs`：用户文件热加载间隔
-- `admin.enabled` / `admin.listenHost` / `admin.listenPort` / `admin.token`：Web 管理端配置
+- `admin.enabled` / `admin.listenHost` / `admin.listenPort` / `admin.token`：Web 管理端配置（管理面默认独立子进程）
 - `admin.serviceControl.enabled` / `admin.serviceControl.systemdService` / `admin.serviceControl.useSudo`：Web 触发 systemd 重启配置
 - `admin.clientConfigExport.*`：用户 client 配置导出默认值（`upstreamHost/upstreamPort/serverName/rejectUnauthorized/caFile`）
 - `logLevel`：日志等级（`DEBUG/INFO/WARN/ERROR`）
 - `listenBacklog`：监听 backlog
 - `maxBufferedBytes`：单连接写缓冲上限
-- `metricsIntervalMs`：指标日志输出周期
+- `metricsIntervalMs`：指标日志输出周期（默认 `60000ms`）
+- `metricsReporter.enabled`：是否启用指标异步上报子进程（默认 `true`，主进程仅采样并 IPC 发送）
 - `slowEstablishEnabled`：是否启用 `slow establish` 慢链路日志收集（默认 `false`；开启后输出慢日志与 summary）
 - `slowEstablishTopN`：慢链路 summary 输出条数上限（默认 `5`）
+- `slowEstablishSummaryIntervalMs`：慢链路 summary 输出周期（默认 `120000ms`，且不低于 `metricsIntervalMs`）
 - `establishWarnThresholdMs`：建链慢日志阈值（毫秒，默认 `1500`，超过会打印 `slow establish` 警告）
 - `establishWarnMinIntervalMs`：同目标慢建链日志最小间隔（毫秒，默认 `5000`，用于限频降噪）
 - `remoteErrorLogMinIntervalMs`：`remote connection error` 同目标日志最小输出间隔（毫秒，默认 `3000`；`0` 表示不限制）
-- `h2HeaderTableSize` / `h2InitialWindowSize` / `h2MaxConcurrentStreams` / `h2MaxFrameSize` / `h2MaxHeaderListSize` / `h2EnableConnectProtocol`：HTTP/2 连接参数（默认值见配置文件，通常保持默认）
-- `h2SessionNoDelay`：是否对入站 H2 会话 socket 启用 `TCP_NODELAY`（默认 `true`，降低小包延迟）
-- `h2SessionKeepAlive` / `h2SessionKeepAliveInitialDelayMs`：入站 H2 会话 socket 保活设置（默认开启，初始延迟 `30000ms`）
+- `h2HeaderTableSize` / `h2InitialWindowSize` / `h2MaxConcurrentStreams` / `h2MaxFrameSize` / `h2MaxHeaderListSize`：HTTP/2 连接参数（默认值见配置文件，通常保持默认）
 - `remoteConnectTimeoutMs`：到目标地址连接超时
-- `remoteAutoSelectFamily`：是否启用 Node 内置双栈自动建连（默认 `true`；低版本不支持时会自动回退）
-- `remoteAutoSelectFamilyAttemptTimeoutMs`：双栈竞速延迟（毫秒，默认 `300`）
 - `remoteConnectMaxInFlight`：server 同时进行中的出站建连上限（默认 `4096`；超过会快速返回 `503`，用于抑制建连风暴）
 - `remoteConnectMaxInFlightPerHost`：单目标主机（host:port）同时进行中的建连上限（默认 `1024`；用于隔离热点目标）
 - `remoteConnectOverloadWaitMs`：过载时短暂等待可用建连槽的时长（毫秒，默认 `20`）
 - `remoteConnectOverloadMaxWaiters`：允许进入短暂等待的并发请求上限（默认 `1024`）
 - `remoteConnectOverloadLogMinIntervalMs`：过载拒绝日志最小输出间隔（毫秒，默认 `3000`；`0` 表示不限制）
-- `remoteDnsCacheEnabled`：是否启用轻量 DNS 缓存（默认 `true`）
-- `remoteDnsPreferIPv4`：DNS 缓存选址时是否优先 IPv4（默认 `true`，适合无 IPv6 出口环境）
 - `remoteDnsCacheTtlMs`：DNS 正缓存 TTL（毫秒，默认 `60000`）
 - `remoteDnsNegativeCacheTtlMs`：DNS 负缓存 TTL（毫秒，默认 `5000`）
 - `remoteDnsCacheMaxEntries`：DNS 缓存最大条目数（默认 `4096`）
-- `remoteCircuitEnabled`：是否启用目标级短时熔断（默认 `true`）
 - `remoteCircuitFailureThreshold`：单目标连续建连失败触发熔断的阈值（默认 `8`）
 - `remoteCircuitOpenMs`：熔断打开后拒绝时长（毫秒，默认 `15000`）
 - `remoteCircuitLogMinIntervalMs`：熔断相关日志最小输出间隔（毫秒，默认 `3000`）
@@ -140,19 +135,21 @@ node bin/4px.js client -c config/client.json
 - `deviceLeaseStore.bindPeerIp`：设备识别是否绑定客户端源 IP（默认 `true`，防共享 token 伪造）
 - `deviceLeaseStore.prefix`：Redis 模式下设备租约键前缀
 - `deviceLeaseStore.redis.*`：Redis 连接参数（`enabled/url/password/database/connectTimeoutMs`）
+- `deviceLeaseTouchMinIntervalMs`：同设备租约最小触达间隔（默认 `5000ms`，仅在 Redis 模式用于降低每请求 `eval` 频率）
+- `camouflageRateLimit.windowMs/maxRequests`：伪装页 `GET /` 轻量限频（默认 `10s` 内每 IP 最多 `30` 次，超出返回 `429`；不影响 `/proxy`）
 
 ### 性能参数（建议重点）
 
 - 建连并发：`remoteConnectMaxInFlight`、`remoteConnectMaxInFlightPerHost`
 - 过载削峰：`remoteConnectOverloadWaitMs`、`remoteConnectOverloadMaxWaiters`、`remoteConnectOverloadLogMinIntervalMs`
-- DNS 缓存：`remoteDnsCacheEnabled`、`remoteDnsPreferIPv4`、`remoteDnsCacheTtlMs`、`remoteDnsNegativeCacheTtlMs`
-- 短时熔断：`remoteCircuitEnabled`、`remoteCircuitFailureThreshold`、`remoteCircuitOpenMs`
+- DNS 缓存：`remoteDnsCacheTtlMs`、`remoteDnsNegativeCacheTtlMs`、`remoteDnsCacheMaxEntries`
+- 短时熔断：`remoteCircuitFailureThreshold`、`remoteCircuitOpenMs`
 - 慢链路诊断：`slowEstablishEnabled`、`establishWarnThresholdMs`、`remoteErrorLogMinIntervalMs`
 
 说明：
-- 若运行环境 IPv6 不可达，建议保持 `remoteDnsPreferIPv4=true`，可显著降低 `ENETUNREACH`。
-- `h2SessionNoDelay` / `h2SessionKeepAlive` 在部分 Node 运行时可能受限，代码会自动禁用并继续运行。
+- 当前代码固定使用高性能默认：入站 socket 强制 `TCP_NODELAY + KeepAlive(30000ms)`；出站优先启用双栈自动建连；目标级短时熔断与伪装页限频始终开启，不再暴露对应开关参数。
 - 若使用 `USE_CLUSTER=1` 且需要严格防作弊，建议启用 `deviceLeaseStore.mode=redis`，避免多 worker 内存状态分裂导致设备上限失真。
+- 管理端口 `6688` 默认以独立子进程运行，降低对数据面事件循环的影响。
 
 ### `client.json`
 
@@ -228,6 +225,84 @@ sudo systemctl restart 4px
 journalctl -u 4px -f
 ```
 
+## 生产运维命令速查
+
+以下命令默认在 Linux + systemd 环境使用，服务名为 `4px`。
+
+1. 服务状态与启停
+
+```bash
+sudo systemctl status 4px
+sudo systemctl start 4px
+sudo systemctl stop 4px
+sudo systemctl restart 4px
+sudo systemctl daemon-reload
+```
+
+2. 日志查看（实时/历史）
+
+```bash
+journalctl -u 4px -f
+journalctl -u 4px -n 200 --no-pager
+journalctl -u 4px --since "10 min ago" --no-pager
+```
+
+3. 端口与进程检查
+
+```bash
+sudo ss -lntp | grep -E ":6666|:6688"
+ps -ef | grep -E "node.*4px|4px.js" | grep -v grep
+```
+
+4. 配置校验与生效
+
+```bash
+cd /path/to/apps/node
+node --check src/server.js
+node --check src/admin_entry.js
+python3 -m json.tool config/server.json >/dev/null
+sudo systemctl restart 4px
+```
+
+5. 基础连通性自检（本机）
+
+```bash
+# 伪装页（应返回 200）
+curl -k -I https://127.0.0.1:6666/
+
+# 管理页（仅在 admin.enabled=true 且端口可达时）
+curl -I http://127.0.0.1:6688/admin/login
+```
+
+6. 发布与回滚（最小流程）
+
+```bash
+# 发布
+cd /path/to/repo
+git pull
+cd apps/node && npm ci --omit=dev
+sudo systemctl restart 4px
+
+# 回滚（示例：回退到上一版本 tag）
+cd /path/to/repo
+git checkout <previous-tag>
+cd apps/node && npm ci --omit=dev
+sudo systemctl restart 4px
+```
+
+7. 常见故障定位
+
+```bash
+# 鉴权失败
+journalctl -u 4px --since "10 min ago" | grep -E "auth|401|x-auth-reason"
+
+# 设备数限制拒绝
+journalctl -u 4px --since "10 min ago" | grep -E "device limit exceeded|active_devices|max_devices"
+
+# 过载拒绝/熔断
+journalctl -u 4px --since "10 min ago" | grep -E "overload|circuit open"
+```
+
 ## Redis（设备租约，集群防绕过）
 
 当你启用 `USE_CLUSTER=1` 且要求严格设备数限制时，建议将 `deviceLeaseStore.mode` 设为 `redis`。
@@ -296,6 +371,7 @@ http://127.0.0.1:6688/admin
 - 管理页已拆分为 Tab：用户管理、服务器资源、配置管理。
 - 管理页资源页已分开展示：服务器整体资源 + 本进程资源占用（含占比）。
 - 管理页支持在线查看/编辑 `server.json`（保存后需重启 server 生效）。
+- 管理面默认独立进程运行（不再提供同进程模式）。
 - 配置 `admin.serviceControl` 后，可在管理页一键重启 systemd 服务。
 - `server.users.json` 中用户凭证字段为 `users[].authToken`。
 - 用户管理支持导出备份与导入恢复（JSON 文件，导入默认合并，可选覆盖；导入前会显示预览）。

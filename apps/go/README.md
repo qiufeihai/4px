@@ -5,7 +5,7 @@ Go 版本客户端用于连接 Node `server`，并提供跨平台系统代理开
 协议兼容：
 - 上游协议：`TLS + HTTP/2`
 - 请求路径：`POST /proxy`
-- 关键请求头：`x-auth-token`、`x-target(base64url(host:port))`
+- 关键请求头：`x-auth-token`、`x-target-host`、`x-target-port`
 
 ## 核心特性
 

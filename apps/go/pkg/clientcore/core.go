@@ -6,7 +6,6 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -826,7 +825,6 @@ func openUpstreamTunnel(ctx context.Context, rt *proxyRuntime, target string) (i
 	}
 	req.Header.Set("x-target-host", host)
 	req.Header.Set("x-target-port", portStr)
-	req.Header.Set("x-target", base64.RawURLEncoding.EncodeToString([]byte(target)))
 	req.Header.Set("x-trace-id", traceID)
 
 	resp, err := rt.client.Do(req)

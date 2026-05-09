@@ -51,7 +51,7 @@
   },
   "logLevel": "WARN",
   "maxBufferedBytes": 4194304,
-  "metricsIntervalMs": 30000,
+  "metricsIntervalMs": 120000,
   "slowEstablishEnabled": false,
   "establishWarnThresholdMs": 1500,
   "establishWarnMinIntervalMs": 5000,
@@ -61,24 +61,15 @@
   "h2MaxConcurrentStreams": 1024,
   "h2MaxFrameSize": 65536,
   "h2MaxHeaderListSize": 65536,
-  "h2EnableConnectProtocol": false,
-  "h2SessionNoDelay": true,
-  "h2SessionKeepAlive": true,
-  "h2SessionKeepAliveInitialDelayMs": 30000,
   "remoteConnectTimeoutMs": 15000,
-  "remoteAutoSelectFamily": true,
-  "remoteAutoSelectFamilyAttemptTimeoutMs": 300,
   "remoteConnectMaxInFlight": 4096,
   "remoteConnectMaxInFlightPerHost": 1024,
   "remoteConnectOverloadWaitMs": 20,
   "remoteConnectOverloadMaxWaiters": 1024,
   "remoteConnectOverloadLogMinIntervalMs": 3000,
-  "remoteDnsCacheEnabled": true,
-  "remoteDnsPreferIPv4": true,
   "remoteDnsCacheTtlMs": 60000,
   "remoteDnsNegativeCacheTtlMs": 5000,
   "remoteDnsCacheMaxEntries": 4096,
-  "remoteCircuitEnabled": true,
   "remoteCircuitFailureThreshold": 8,
   "remoteCircuitOpenMs": 15000,
   "remoteCircuitLogMinIntervalMs": 3000,
@@ -86,5 +77,14 @@
   "remoteIdleTimeoutMs": 300000,
   "remoteKeepAliveInitialDelayMs": 30000,
   "streamIdleTimeoutMs": 300000,
-  "remoteErrorLogMinIntervalMs": 3000
+  "remoteErrorLogMinIntervalMs": 3000,
+  "slowEstablishSummaryIntervalMs": 300000,
+  "metricsReporter": {
+    "enabled": true
+  },
+  "deviceLeaseTouchMinIntervalMs": 5000,
+  "camouflageRateLimit": {
+    "windowMs": 10000,
+    "maxRequests": 30
+  }
 }

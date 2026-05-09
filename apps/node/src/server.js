@@ -3,12 +3,12 @@ const dns = require('dns');
 const net = require('net');
 const path = require('path');
 const http2 = require('http2');
+const { fork } = require('child_process');
 const { monitorEventLoopDelay } = require('perf_hooks');
 const crypto = require('crypto');
 const { loadConfig, resolvePath } = require('./config');
 const { createLogger } = require('./logger');
 const { UserStore } = require('./user_store');
-const { startAdminServer } = require('./admin/server');
 const { createDeviceLeaseStore } = require('./device_lease_store');
 
 const cfg = loadConfig(path.resolve(__dirname, '../config/server.json'));
@@ -18,47 +18,38 @@ const logger = createLogger('server', cfg.logLevel);
 const remoteConnectTimeoutMs = cfg.remoteConnectTimeoutMs || cfg.connectTimeoutMs || 10000;
 const remoteIdleTimeoutMs = Number.isFinite(Number(cfg.remoteIdleTimeoutMs)) ? Number(cfg.remoteIdleTimeoutMs) : 300000;
 const remoteKeepAliveInitialDelayMs = cfg.remoteKeepAliveInitialDelayMs || 30000;
-const remoteAutoSelectFamily = cfg.remoteAutoSelectFamily !== false;
-const remoteAutoSelectFamilyAttemptTimeoutMs = Math.max(
-  10,
-  Number(cfg.remoteAutoSelectFamilyAttemptTimeoutMs || 300)
-);
+const remoteAutoSelectFamilyAttemptTimeoutMs = 300;
 const streamIdleTimeoutMs = Number.isFinite(Number(cfg.streamIdleTimeoutMs)) ? Number(cfg.streamIdleTimeoutMs) : 300000;
 const maxBufferedBytes = cfg.maxBufferedBytes || 4 * 1024 * 1024;
-const metricsIntervalMs = cfg.metricsIntervalMs || 30000;
+const metricsIntervalMs = cfg.metricsIntervalMs || 60000;
 const listenBacklog = cfg.listenBacklog || 4096;
 const remoteConnectMaxInFlight = Math.max(1, Math.floor(Number(cfg.remoteConnectMaxInFlight || 4096)));
 const remoteConnectMaxInFlightPerHost = Math.max(0, Math.floor(Number(cfg.remoteConnectMaxInFlightPerHost || 1024)));
 const remoteConnectOverloadLogMinIntervalMs = Math.max(0, Number(cfg.remoteConnectOverloadLogMinIntervalMs || 3000));
 const remoteConnectOverloadWaitMs = Math.max(0, Math.floor(Number(cfg.remoteConnectOverloadWaitMs || 20)));
 const remoteConnectOverloadMaxWaiters = Math.max(0, Math.floor(Number(cfg.remoteConnectOverloadMaxWaiters || 1024)));
-const remoteDnsCacheEnabled = cfg.remoteDnsCacheEnabled !== false;
-const remoteDnsPreferIPv4 = cfg.remoteDnsPreferIPv4 !== false;
 const remoteDnsCacheTtlMs = Math.max(1000, Math.floor(Number(cfg.remoteDnsCacheTtlMs || 60000)));
 const remoteDnsNegativeCacheTtlMs = Math.max(200, Math.floor(Number(cfg.remoteDnsNegativeCacheTtlMs || 5000)));
 const remoteDnsCacheMaxEntries = Math.max(64, Math.floor(Number(cfg.remoteDnsCacheMaxEntries || 4096)));
-const remoteCircuitEnabled = cfg.remoteCircuitEnabled !== false;
 const remoteCircuitFailureThreshold = Math.max(1, Math.floor(Number(cfg.remoteCircuitFailureThreshold || 8)));
 const remoteCircuitOpenMs = Math.max(1000, Math.floor(Number(cfg.remoteCircuitOpenMs || 15000)));
 const remoteCircuitLogMinIntervalMs = Math.max(0, Math.floor(Number(cfg.remoteCircuitLogMinIntervalMs || 3000)));
 const remoteCircuitMaxTargets = Math.max(64, Math.floor(Number(cfg.remoteCircuitMaxTargets || 4096)));
 const establishWarnThresholdMs = Math.max(200, Number(cfg.establishWarnThresholdMs || 1500));
-const establishWarnMinIntervalMs = Math.max(200, Number(cfg.establishWarnMinIntervalMs || 5000));
 const slowEstablishEnabled = cfg.slowEstablishEnabled === true;
 const slowEstablishTopN = Math.max(1, Math.floor(Number(cfg.slowEstablishTopN || 5)));
+const slowEstablishSummaryIntervalMs = Math.max(
+  metricsIntervalMs,
+  Math.floor(Number(cfg.slowEstablishSummaryIntervalMs || Math.max(metricsIntervalMs * 2, 120000)))
+);
 const remoteErrorLogMinIntervalMs = Math.max(0, Number(cfg.remoteErrorLogMinIntervalMs || 3000));
 const h2HeaderTableSize = Number(cfg.h2HeaderTableSize || 4096);
 const h2InitialWindowSize = Number(cfg.h2InitialWindowSize || 1024 * 1024);
 const h2MaxConcurrentStreams = Number(cfg.h2MaxConcurrentStreams || 1024);
 const h2MaxFrameSize = Number(cfg.h2MaxFrameSize || 64 * 1024);
 const h2MaxHeaderListSize = Number(cfg.h2MaxHeaderListSize || 64 * 1024);
-const h2EnableConnectProtocol = cfg.h2EnableConnectProtocol === true;
-const h2SessionNoDelay = cfg.h2SessionNoDelay !== false;
-const h2SessionKeepAlive = cfg.h2SessionKeepAlive !== false;
-const h2SessionKeepAliveInitialDelayMs = Math.max(
-  0,
-  Number(cfg.h2SessionKeepAliveInitialDelayMs || 30000)
-);
+const h2EnableConnectProtocol = false;
+const h2SessionKeepAliveInitialDelayMs = 30000;
 const defaultMaxDevices = Math.max(1, Math.floor(Number(cfg.defaultMaxDevices || 1)));
 const deviceLeaseTtlMs = Math.max(5000, Math.floor(Number(cfg.deviceLeaseTtlMs || 90000)));
 const deviceLimitPolicy = String(cfg.deviceLimitPolicy || 'reject').trim().toLowerCase() === 'kick_oldest' ? 'kick_oldest' : 'reject';
@@ -78,6 +69,18 @@ const deviceLeaseStoreMode = String(
   ? 'redis'
   : 'memory';
 const deviceLeaseBindPeerIp = deviceLeaseStoreCfg.bindPeerIp !== false;
+const deviceLeaseTouchMinIntervalMs = Math.max(
+  0,
+  Math.floor(Number(cfg.deviceLeaseTouchMinIntervalMs || (deviceLeaseStoreMode === 'redis' ? 5000 : 0)))
+);
+const camouflageRateLimitCfg = cfg.camouflageRateLimit && typeof cfg.camouflageRateLimit === 'object'
+  ? cfg.camouflageRateLimit
+  : {};
+const camouflageRateLimitWindowMs = Math.max(1000, Math.floor(Number(camouflageRateLimitCfg.windowMs || 10000)));
+const camouflageRateLimitMaxRequests = Math.max(1, Math.floor(Number(camouflageRateLimitCfg.maxRequests || 30)));
+const adminCfg = cfg.admin && typeof cfg.admin === 'object' ? cfg.admin : {};
+const metricsReporterCfg = cfg.metricsReporter && typeof cfg.metricsReporter === 'object' ? cfg.metricsReporter : {};
+const metricsReporterEnabled = metricsReporterCfg.enabled === true;
 const usersFilePath = cfg.authUsersFile ? resolvePath(cfg.__configDir, cfg.authUsersFile) : '';
 const staticAuthTokens = Array.isArray(cfg.authTokens)
   ? cfg.authTokens.map((v) => String(v || '').trim()).filter((v) => v)
@@ -92,10 +95,13 @@ const userStore = new UserStore({
 let deviceLeaseStore = null;
 let deviceLeaseStoreResolvedMode = 'memory';
 let closeDeviceLeaseStore = async () => {};
-const slowEstablishLastWarnAt = new Map();
+let adminChild = null;
+let metricsReporterChild = null;
+const recentDeviceLeaseTouchAt = new Map();
+const camouflageRateLimitState = new Map();
 const slowEstablishSummary = new Map();
 const remoteErrorLastLogAt = new Map();
-let remoteAutoSelectFamilyRuntimeEnabled = remoteAutoSelectFamily;
+let remoteAutoSelectFamilyRuntimeEnabled = true;
 let remoteAutoSelectFamilyFallbackWarned = false;
 let remoteConnectInFlight = 0;
 let remoteConnectInFlightPeak = 0;
@@ -148,11 +154,6 @@ function createRemoteConnection(host, port, family) {
     remoteAutoSelectFamilyRuntimeEnabled = false;
     if (!remoteAutoSelectFamilyFallbackWarned) {
       remoteAutoSelectFamilyFallbackWarned = true;
-      logger.warn(
-        `remote autoSelectFamily unsupported, fallback to default connect behavior, err=${String(
-          err && (err.code || err.message || err)
-        )}`
-      );
     }
     return net.createConnection({ host, port, ...baseOptions });
   }
@@ -180,15 +181,13 @@ function chooseDnsAddressFromEntry(entry) {
   if (!entry || !Array.isArray(entry.addresses) || entry.addresses.length === 0) return null;
   const length = entry.addresses.length;
   const startIndex = entry.nextIndex % length;
-  if (remoteDnsPreferIPv4) {
-    for (let i = 0; i < length; i += 1) {
-      const index = (startIndex + i) % length;
-      const candidate = entry.addresses[index];
-      if (candidate && candidate.family === 4) {
-        entry.nextIndex = (index + 1) % length;
-        stats.remoteDnsPreferIpv4PickTotal += 1;
-        return candidate;
-      }
+  for (let i = 0; i < length; i += 1) {
+    const index = (startIndex + i) % length;
+    const candidate = entry.addresses[index];
+    if (candidate && candidate.family === 4) {
+      entry.nextIndex = (index + 1) % length;
+      stats.remoteDnsPreferIpv4PickTotal += 1;
+      return candidate;
     }
   }
   const selected = entry.addresses[startIndex];
@@ -202,7 +201,7 @@ async function resolveRemoteAddress(host) {
     throw new Error('empty target host');
   }
   const ipFamily = net.isIP(normalizedHost);
-  if (ipFamily > 0 || !remoteDnsCacheEnabled || remoteAutoSelectFamilyRuntimeEnabled) {
+  if (ipFamily > 0 || remoteAutoSelectFamilyRuntimeEnabled) {
     return { host: normalizedHost, family: ipFamily > 0 ? ipFamily : undefined };
   }
   const now = Date.now();
@@ -297,7 +296,6 @@ function getOrCreateCircuitState(key) {
 }
 
 function isCircuitOpen(key, nowMs) {
-  if (!remoteCircuitEnabled) return false;
   const state = remoteCircuitState.get(key);
   if (!state) return false;
   const now = Number.isFinite(Number(nowMs)) ? Number(nowMs) : Date.now();
@@ -312,7 +310,6 @@ function isCircuitOpen(key, nowMs) {
 }
 
 function markCircuitSuccess(key) {
-  if (!remoteCircuitEnabled) return;
   const state = remoteCircuitState.get(key);
   if (!state) return;
   if (state.failures === 0 && state.openUntilMs === 0) return;
@@ -320,8 +317,7 @@ function markCircuitSuccess(key) {
   state.openUntilMs = 0;
 }
 
-function markCircuitFailure(key, reason) {
-  if (!remoteCircuitEnabled) return;
+function markCircuitFailure(key) {
   const state = getOrCreateCircuitState(key);
   state.failures += 1;
   if (state.failures < remoteCircuitFailureThreshold) {
@@ -330,11 +326,6 @@ function markCircuitFailure(key, reason) {
   state.failures = 0;
   state.openUntilMs = Date.now() + remoteCircuitOpenMs;
   stats.remoteCircuitOpenTotal += 1;
-  if (shouldEmitCircuitLog(key)) {
-    logger.warn(
-      `remote circuit opened, target=${key}, open_ms=${remoteCircuitOpenMs}, threshold=${remoteCircuitFailureThreshold}, reason=${reason}`
-    );
-  }
 }
 
 function acquireHostConnectSlot(key) {
@@ -359,21 +350,6 @@ function releaseHostConnectSlot(key) {
     return;
   }
   remoteConnectHostInFlight.set(key, current - 1);
-}
-
-function shouldEmitSlowWarn(kind, host, port) {
-  if (!slowEstablishEnabled) return false;
-  const key = `${kind}|${String(host || '').toLowerCase()}:${Number(port || 0)}`;
-  const now = Date.now();
-  const last = Number(slowEstablishLastWarnAt.get(key) || 0);
-  if (now - last < establishWarnMinIntervalMs) {
-    return false;
-  }
-  slowEstablishLastWarnAt.set(key, now);
-  if (slowEstablishLastWarnAt.size > 2048) {
-    slowEstablishLastWarnAt.clear();
-  }
-  return true;
 }
 
 function recordSlowEstablish(kind, host, port, ttfbMs, connectMs) {
@@ -444,29 +420,133 @@ const stats = {
 const loopDelay = monitorEventLoopDelay({ resolution: 20 });
 loopDelay.enable();
 
-setInterval(() => {
-  logger.info(
-    `metrics stream_total=${stats.streamTotal} active_streams=${stats.activeStreams} route_reject=${stats.routeRejectedTotal} auth_reject=${stats.authRejectedTotal} target_parse_fail=${stats.targetParseFailTotal} remote_ok=${stats.remoteConnectSuccessTotal} remote_error=${stats.remoteConnectErrorTotal} remote_connect_timeout=${stats.remoteConnectTimeoutTotal} remote_connect_overload_reject=${stats.remoteConnectOverloadRejectTotal} remote_connect_overload_reject_by_host=${stats.remoteConnectOverloadRejectByHostTotal} remote_connect_overload_wait_total=${stats.remoteConnectOverloadWaitTotal} remote_connect_overload_waiters=${remoteConnectOverloadWaiters} remote_dns_cache_hit=${stats.remoteDnsCacheHitTotal} remote_dns_cache_miss=${stats.remoteDnsCacheMissTotal} remote_dns_negative_cache_hit=${stats.remoteDnsNegativeCacheHitTotal} remote_dns_resolve_error=${stats.remoteDnsResolveErrorTotal} remote_dns_prefer_ipv4_pick=${stats.remoteDnsPreferIpv4PickTotal} remote_dns_cache_size=${remoteDnsCache.size} remote_circuit_reject=${stats.remoteCircuitRejectTotal} remote_circuit_open_total=${stats.remoteCircuitOpenTotal} remote_circuit_targets=${remoteCircuitState.size} remote_connect_inflight=${remoteConnectInFlight} remote_connect_inflight_peak=${remoteConnectInFlightPeak} remote_connect_inflight_host_peak=${remoteConnectInFlightPerHostPeak} remote_idle_timeout=${stats.remoteIdleTimeoutTotal} buffer_overflow=${stats.bufferOverflowTotal} retryable_err=${stats.retryableErrorTotal} non_retryable_err=${stats.nonRetryableErrorTotal} eventloop_p95_ms=${(loopDelay.percentile(95) / 1e6).toFixed(2)}`
-  );
-  if (remoteDnsCacheEnabled) {
-    const hitDelta = Math.max(0, stats.remoteDnsCacheHitTotal - dnsSummaryLast.hit);
-    const missDelta = Math.max(0, stats.remoteDnsCacheMissTotal - dnsSummaryLast.miss);
-    const negativeHitDelta = Math.max(0, stats.remoteDnsNegativeCacheHitTotal - dnsSummaryLast.negativeHit);
-    const resolveErrorDelta = Math.max(0, stats.remoteDnsResolveErrorTotal - dnsSummaryLast.resolveError);
-    const totalLookups = hitDelta + missDelta + negativeHitDelta;
-    const cacheHitRate = totalLookups > 0 ? (((hitDelta + negativeHitDelta) / totalLookups) * 100).toFixed(1) : '0.0';
-    const negativeShare = totalLookups > 0 ? ((negativeHitDelta / totalLookups) * 100).toFixed(1) : '0.0';
-    logger.info(
-      `dns summary interval_ms=${metricsIntervalMs} lookups=${totalLookups} hit=${hitDelta} miss=${missDelta} negative_hit=${negativeHitDelta} resolve_error=${resolveErrorDelta} hit_rate_pct=${cacheHitRate} negative_share_pct=${negativeShare}`
-    );
-    dnsSummaryLast.hit = stats.remoteDnsCacheHitTotal;
-    dnsSummaryLast.miss = stats.remoteDnsCacheMissTotal;
-    dnsSummaryLast.negativeHit = stats.remoteDnsNegativeCacheHitTotal;
-    dnsSummaryLast.resolveError = stats.remoteDnsResolveErrorTotal;
+function formatMetricsLine(snapshot) {
+  return `metrics stream_total=${snapshot.streamTotal} active_streams=${snapshot.activeStreams} route_reject=${snapshot.routeRejectedTotal} auth_reject=${snapshot.authRejectedTotal} target_parse_fail=${snapshot.targetParseFailTotal} remote_ok=${snapshot.remoteConnectSuccessTotal} remote_error=${snapshot.remoteConnectErrorTotal} remote_connect_timeout=${snapshot.remoteConnectTimeoutTotal} remote_connect_overload_reject=${snapshot.remoteConnectOverloadRejectTotal} remote_connect_overload_reject_by_host=${snapshot.remoteConnectOverloadRejectByHostTotal} remote_connect_overload_wait_total=${snapshot.remoteConnectOverloadWaitTotal} remote_connect_overload_waiters=${snapshot.remoteConnectOverloadWaiters} remote_dns_cache_hit=${snapshot.remoteDnsCacheHitTotal} remote_dns_cache_miss=${snapshot.remoteDnsCacheMissTotal} remote_dns_negative_cache_hit=${snapshot.remoteDnsNegativeCacheHitTotal} remote_dns_resolve_error=${snapshot.remoteDnsResolveErrorTotal} remote_dns_prefer_ipv4_pick=${snapshot.remoteDnsPreferIpv4PickTotal} remote_dns_cache_size=${snapshot.remoteDnsCacheSize} remote_circuit_reject=${snapshot.remoteCircuitRejectTotal} remote_circuit_open_total=${snapshot.remoteCircuitOpenTotal} remote_circuit_targets=${snapshot.remoteCircuitTargets} remote_connect_inflight=${snapshot.remoteConnectInFlight} remote_connect_inflight_peak=${snapshot.remoteConnectInFlightPeak} remote_connect_inflight_host_peak=${snapshot.remoteConnectInFlightHostPeak} remote_idle_timeout=${snapshot.remoteIdleTimeoutTotal} buffer_overflow=${snapshot.bufferOverflowTotal} retryable_err=${snapshot.retryableErrorTotal} non_retryable_err=${snapshot.nonRetryableErrorTotal} eventloop_p95_ms=${snapshot.eventLoopP95Ms}`;
+}
+
+function formatDnsSummaryLine(summary) {
+  return `dns summary interval_ms=${summary.intervalMs} lookups=${summary.totalLookups} hit=${summary.hitDelta} miss=${summary.missDelta} negative_hit=${summary.negativeHitDelta} resolve_error=${summary.resolveErrorDelta} hit_rate_pct=${summary.cacheHitRate} negative_share_pct=${summary.negativeShare}`;
+}
+
+function formatSlowSummaryLine(items, totalItems) {
+  const summaryText = items
+    .map((v) => `${v.kind}:${v.host}:${v.port}#${v.count}(ttfb_max=${v.ttfbMaxMs},connect_max=${v.connectMaxMs})`)
+    .join(', ');
+  return `slow establish summary top=${items.length}/${totalItems}, ${summaryText}`;
+}
+
+function isCamouflageRateLimited(remoteIp) {
+  const ip = normalizeRemoteIp(remoteIp);
+  const now = Date.now();
+  const current = camouflageRateLimitState.get(ip);
+  if (!current || now - Number(current.windowStartMs || 0) >= camouflageRateLimitWindowMs) {
+    camouflageRateLimitState.set(ip, {
+      windowStartMs: now,
+      count: 1
+    });
+    return false;
   }
+  if (Number(current.count || 0) >= camouflageRateLimitMaxRequests) {
+    return true;
+  }
+  current.count = Number(current.count || 0) + 1;
+  return false;
+}
+
+function sendMetricsReporterMessage(type, payload) {
+  if (!metricsReporterEnabled) return false;
+  if (!metricsReporterChild || !metricsReporterChild.connected || typeof metricsReporterChild.send !== 'function') {
+    return false;
+  }
+  try {
+    metricsReporterChild.send({ type, payload });
+    return true;
+  } catch (err) {
+    if (logger.enabled('DEBUG')) {
+      logger.debug(`metrics reporter send failed: ${String((err && (err.code || err.message)) || err)}`);
+    }
+    return false;
+  }
+}
+
+setInterval(() => {
+  const metricsSnapshot = {
+    streamTotal: stats.streamTotal,
+    activeStreams: stats.activeStreams,
+    routeRejectedTotal: stats.routeRejectedTotal,
+    authRejectedTotal: stats.authRejectedTotal,
+    targetParseFailTotal: stats.targetParseFailTotal,
+    remoteConnectSuccessTotal: stats.remoteConnectSuccessTotal,
+    remoteConnectErrorTotal: stats.remoteConnectErrorTotal,
+    remoteConnectTimeoutTotal: stats.remoteConnectTimeoutTotal,
+    remoteConnectOverloadRejectTotal: stats.remoteConnectOverloadRejectTotal,
+    remoteConnectOverloadRejectByHostTotal: stats.remoteConnectOverloadRejectByHostTotal,
+    remoteConnectOverloadWaitTotal: stats.remoteConnectOverloadWaitTotal,
+    remoteConnectOverloadWaiters: remoteConnectOverloadWaiters,
+    remoteDnsCacheHitTotal: stats.remoteDnsCacheHitTotal,
+    remoteDnsCacheMissTotal: stats.remoteDnsCacheMissTotal,
+    remoteDnsNegativeCacheHitTotal: stats.remoteDnsNegativeCacheHitTotal,
+    remoteDnsResolveErrorTotal: stats.remoteDnsResolveErrorTotal,
+    remoteDnsPreferIpv4PickTotal: stats.remoteDnsPreferIpv4PickTotal,
+    remoteDnsCacheSize: remoteDnsCache.size,
+    remoteCircuitRejectTotal: stats.remoteCircuitRejectTotal,
+    remoteCircuitOpenTotal: stats.remoteCircuitOpenTotal,
+    remoteCircuitTargets: remoteCircuitState.size,
+    remoteConnectInFlight: remoteConnectInFlight,
+    remoteConnectInFlightPeak: remoteConnectInFlightPeak,
+    remoteConnectInFlightHostPeak: remoteConnectInFlightPerHostPeak,
+    remoteIdleTimeoutTotal: stats.remoteIdleTimeoutTotal,
+    bufferOverflowTotal: stats.bufferOverflowTotal,
+    retryableErrorTotal: stats.retryableErrorTotal,
+    nonRetryableErrorTotal: stats.nonRetryableErrorTotal,
+    eventLoopP95Ms: (loopDelay.percentile(95) / 1e6).toFixed(2)
+  };
+  if (!sendMetricsReporterMessage('metrics_snapshot', metricsSnapshot)) {
+    logger.info(formatMetricsLine(metricsSnapshot));
+  }
+  const hitDelta = Math.max(0, stats.remoteDnsCacheHitTotal - dnsSummaryLast.hit);
+  const missDelta = Math.max(0, stats.remoteDnsCacheMissTotal - dnsSummaryLast.miss);
+  const negativeHitDelta = Math.max(0, stats.remoteDnsNegativeCacheHitTotal - dnsSummaryLast.negativeHit);
+  const resolveErrorDelta = Math.max(0, stats.remoteDnsResolveErrorTotal - dnsSummaryLast.resolveError);
+  const totalLookups = hitDelta + missDelta + negativeHitDelta;
+  const cacheHitRate = totalLookups > 0 ? (((hitDelta + negativeHitDelta) / totalLookups) * 100).toFixed(1) : '0.0';
+  const negativeShare = totalLookups > 0 ? ((negativeHitDelta / totalLookups) * 100).toFixed(1) : '0.0';
+  const dnsSummary = {
+    intervalMs: metricsIntervalMs,
+    totalLookups,
+    hitDelta,
+    missDelta,
+    negativeHitDelta,
+    resolveErrorDelta,
+    cacheHitRate,
+    negativeShare
+  };
+  if (!sendMetricsReporterMessage('dns_summary', dnsSummary)) {
+    logger.info(formatDnsSummaryLine(dnsSummary));
+  }
+  dnsSummaryLast.hit = stats.remoteDnsCacheHitTotal;
+  dnsSummaryLast.miss = stats.remoteDnsCacheMissTotal;
+  dnsSummaryLast.negativeHit = stats.remoteDnsNegativeCacheHitTotal;
+  dnsSummaryLast.resolveError = stats.remoteDnsResolveErrorTotal;
   remoteConnectInFlightPeak = remoteConnectInFlight;
   if (remoteConnectMaxInFlightPerHost > 0) {
     remoteConnectInFlightPerHostPeak = 0;
+  }
+  if (recentDeviceLeaseTouchAt.size > 0) {
+    const expireBefore = Date.now() - Math.max(deviceLeaseTtlMs, deviceLeaseTouchMinIntervalMs);
+    for (const [k, touchedAt] of recentDeviceLeaseTouchAt.entries()) {
+      if (Number(touchedAt || 0) <= expireBefore) {
+        recentDeviceLeaseTouchAt.delete(k);
+      }
+    }
+  }
+  if (camouflageRateLimitState.size > 0) {
+    const expireBefore = Date.now() - camouflageRateLimitWindowMs;
+    for (const [ip, state] of camouflageRateLimitState.entries()) {
+      if (Number(state && state.windowStartMs ? state.windowStartMs : 0) <= expireBefore) {
+        camouflageRateLimitState.delete(ip);
+      }
+    }
   }
   loopDelay.reset();
 }, metricsIntervalMs).unref();
@@ -474,18 +554,19 @@ setInterval(() => {
 setInterval(() => {
   if (!slowEstablishEnabled) return;
   if (slowEstablishSummary.size === 0) return;
-  const items = Array.from(slowEstablishSummary.values())
-    .sort((a, b) => {
-      if (b.ttfbMaxMs !== a.ttfbMaxMs) return b.ttfbMaxMs - a.ttfbMaxMs;
-      return b.count - a.count;
-    })
-    .slice(0, slowEstablishTopN);
-  const summaryText = items
-    .map((v) => `${v.kind}:${v.host}:${v.port}#${v.count}(ttfb_max=${v.ttfbMaxMs},connect_max=${v.connectMaxMs})`)
-    .join(', ');
-  logger.warn(`slow establish summary top=${items.length}/${slowEstablishSummary.size}, ${summaryText}`);
+  const sourceItems = Array.from(slowEstablishSummary.values());
+  const totalItems = sourceItems.length;
+  if (!sendMetricsReporterMessage('slow_summary', { topN: slowEstablishTopN, items: sourceItems })) {
+    const items = sourceItems
+      .sort((a, b) => {
+        if (b.ttfbMaxMs !== a.ttfbMaxMs) return b.ttfbMaxMs - a.ttfbMaxMs;
+        return b.count - a.count;
+      })
+      .slice(0, slowEstablishTopN);
+    logger.warn(formatSlowSummaryLine(items, totalItems));
+  }
   slowEstablishSummary.clear();
-}, metricsIntervalMs).unref();
+}, slowEstablishSummaryIntervalMs).unref();
 
 function classifyServerError(err, fallback = 'retryable') {
   const msg = String((err && (err.code || err.message)) || err || '').toLowerCase();
@@ -658,17 +739,27 @@ async function touchDeviceLease(authUser, deviceKey) {
   if (!deviceLeaseStore) {
     return { ok: false, activeDevices: 0, maxDevices };
   }
-  return deviceLeaseStore.acquireLease({
+  const now = Date.now();
+  const cacheKey = `${uid}|${deviceKey}`;
+  const lastTouchAt = Number(recentDeviceLeaseTouchAt.get(cacheKey) || 0);
+  if (
+    deviceLeaseStoreResolvedMode === 'redis' &&
+    deviceLeaseTouchMinIntervalMs > 0 &&
+    lastTouchAt > 0 &&
+    now - lastTouchAt < deviceLeaseTouchMinIntervalMs
+  ) {
+    return { ok: true, activeDevices: 0, maxDevices };
+  }
+  const result = await deviceLeaseStore.acquireLease({
     userId: uid,
     deviceKey,
     maxDevices,
     policy: deviceLimitPolicy
   });
-}
-
-async function getUserActiveDeviceStats(userIds = []) {
-  if (!deviceLeaseStore) return {};
-  return deviceLeaseStore.getActiveDeviceCountsByUsers(userIds);
+  if (result.ok) {
+    recentDeviceLeaseTouchAt.set(cacheKey, now);
+  }
+  return result;
 }
 
 function parseTarget(headers) {
@@ -680,19 +771,7 @@ function parseTarget(headers) {
       port: portFromHeader
     };
   }
-  const decoded = Buffer.from(String(headers['x-target'] || ''), 'base64url').toString('utf8');
-  const split = decoded.lastIndexOf(':');
-  if (split <= 0 || split >= decoded.length - 1) {
-    throw new Error('Invalid x-target');
-  }
-  const port = Number(decoded.slice(split + 1));
-  if (!Number.isInteger(port) || port <= 0 || port > 65535) {
-    throw new Error('Invalid x-target port');
-  }
-  return {
-    host: decoded.slice(0, split),
-    port
-  };
+  throw new Error('Invalid x-target-host or x-target-port');
 }
 
 const server = http2.createSecureServer({
@@ -716,27 +795,19 @@ server.on('session', (session) => {
   try {
     const socket = session && session.socket;
     if (!socket) return;
-    if (h2SessionNoDelay) {
-      socket.setNoDelay(true);
-    }
-    if (h2SessionKeepAlive) {
-      socket.setKeepAlive(true, h2SessionKeepAliveInitialDelayMs);
-    }
+    socket.setNoDelay(true);
+    socket.setKeepAlive(true, h2SessionKeepAliveInitialDelayMs);
   } catch (err) {
     const code = String(err && err.code ? err.code : '');
     if (code === 'ERR_HTTP2_NO_SOCKET_MANIPULATION') {
       h2SessionSocketTuneSupported = false;
       if (!h2SessionSocketTuneWarned) {
         h2SessionSocketTuneWarned = true;
-        logger.warn(
-          'h2 session socket tuning disabled: current Node runtime does not allow HTTP/2 socket manipulation'
-        );
       }
       return;
     }
     if (!h2SessionSocketTuneWarned) {
       h2SessionSocketTuneWarned = true;
-      logger.warn(`h2 session socket tuning failed and disabled: ${String((err && (err.code || err.message)) || err)}`);
     }
     h2SessionSocketTuneSupported = false;
   }
@@ -782,7 +853,6 @@ server.on('stream', async (stream, headers) => {
   const acceptedAtMs = Date.now();
   let remoteConnectedAtMs = 0;
   let firstRemoteDataAtMs = 0;
-  let establishWarnLogged = false;
   let authUser = null;
   let deviceTicket = '';
   let deviceLeaseKey = '';
@@ -797,6 +867,14 @@ server.on('stream', async (stream, headers) => {
     const reqMethod = String(headers[':method'] || '');
     const reqPath = String(headers[':path'] || '');
     if (reqMethod === 'GET' && reqPath === '/') {
+      if (isCamouflageRateLimited(stream.session && stream.session.socket && stream.session.socket.remoteAddress)) {
+        stream.respond({
+          ':status': 429,
+          'content-type': 'text/plain; charset=utf-8'
+        });
+        stream.end('Too Many Requests');
+        return;
+      }
       stream.respond({
         ':status': 200,
         'content-type': 'text/html; charset=utf-8'
@@ -862,9 +940,6 @@ server.on('stream', async (stream, headers) => {
       return;
     }
     const { host, port } = parseTarget(headers);
-    if (logger.enabled('INFO')) {
-      logger.info(`stream accepted, trace_id=${traceId}, peer=${remotePeer}, stream=${streamId}, user=${authUser.username}, target=${host}:${port}`);
-    }
     const connectTargetKey = targetKey(host, port);
     if (isCircuitOpen(connectTargetKey, Date.now())) {
       stats.remoteCircuitRejectTotal += 1;
@@ -985,18 +1060,9 @@ server.on('stream', async (stream, headers) => {
       markCircuitSuccess(connectTargetKey);
       remoteConnectedAtMs = Date.now();
       stats.remoteConnectSuccessTotal += 1;
-      if (logger.enabled('INFO')) {
-        logger.info(`remote connected, trace_id=${traceId}, stream=${streamId}, target=${host}:${port}`);
-      }
       const connectMs = remoteConnectedAtMs - acceptedAtMs;
       if (connectMs >= establishWarnThresholdMs) {
         recordSlowEstablish('connect', host, port, 0, connectMs);
-      }
-      if (!establishWarnLogged && connectMs >= establishWarnThresholdMs && shouldEmitSlowWarn('connect', host, port)) {
-        establishWarnLogged = true;
-        logger.warn(
-          `slow establish connect, trace_id=${traceId}, stream=${streamId}, peer=${remotePeer}, target=${host}:${port}, connect_ms=${connectMs}, threshold_ms=${establishWarnThresholdMs}`
-        );
       }
       if (remoteIdleTimeoutMs > 0) {
         remote.setTimeout(remoteIdleTimeoutMs, () => {
@@ -1013,7 +1079,6 @@ server.on('stream', async (stream, headers) => {
 
     if (streamIdleTimeoutMs > 0) {
       stream.setTimeout(streamIdleTimeoutMs, () => {
-        logger.warn(`stream idle timeout, trace_id=${traceId}, stream=${streamId}, target=${host}:${port}`);
         stream.close();
       });
     }
@@ -1036,12 +1101,6 @@ server.on('stream', async (stream, headers) => {
         const connectMs = remoteConnectedAtMs > 0 ? remoteConnectedAtMs - acceptedAtMs : -1;
         if (ttfbMs >= establishWarnThresholdMs) {
           recordSlowEstablish('first_byte', host, port, ttfbMs, connectMs);
-        }
-        if (!establishWarnLogged && ttfbMs >= establishWarnThresholdMs && shouldEmitSlowWarn('first_byte', host, port)) {
-          establishWarnLogged = true;
-          logger.warn(
-            `slow establish first_byte, trace_id=${traceId}, stream=${streamId}, peer=${remotePeer}, target=${host}:${port}, ttfb_ms=${ttfbMs}, connect_ms=${connectMs}, threshold_ms=${establishWarnThresholdMs}`
-          );
         }
       }
       const ok = stream.write(chunk);
@@ -1100,9 +1159,6 @@ server.on('stream', async (stream, headers) => {
     });
     remote.on('close', () => {
       releaseConnectInflight();
-      if (logger.enabled('INFO')) {
-        logger.info(`remote closed, trace_id=${traceId}, stream=${streamId}, target=${host}:${port}`);
-      }
       if (!stream.destroyed) stream.end();
     });
   } catch (e) {
@@ -1148,50 +1204,54 @@ async function bootstrap() {
 
   server.listen(cfg.listenPort, cfg.listenHost, listenBacklog, () => {
     logger.info(`H2 server listening on ${cfg.listenHost}:${cfg.listenPort}`);
-    logger.info(`log level=${logger.level}`);
-    logger.info(`listen backlog=${listenBacklog}`);
-    logger.info(
-      `h2 settings header_table_size=${h2HeaderTableSize} initial_window_size=${h2InitialWindowSize} max_concurrent_streams=${h2MaxConcurrentStreams} max_frame_size=${h2MaxFrameSize} max_header_list_size=${h2MaxHeaderListSize}`
-    );
-    logger.info(
-      `h2 session socket no_delay=${h2SessionNoDelay} keep_alive=${h2SessionKeepAlive} keep_alive_initial_delay_ms=${h2SessionKeepAliveInitialDelayMs} supported=${h2SessionSocketTuneSupported}`
-    );
-    logger.info('proxy routes v1=/proxy');
-    logger.info(`slow establish enabled=${slowEstablishEnabled} threshold_ms=${establishWarnThresholdMs} min_interval_ms=${establishWarnMinIntervalMs} top_n=${slowEstablishTopN}`);
-    logger.info(`remote error log min interval ms=${remoteErrorLogMinIntervalMs}`);
-    logger.info(`remote connect max in flight=${remoteConnectMaxInFlight}`);
-    logger.info(`remote connect max in flight per host=${remoteConnectMaxInFlightPerHost}`);
-    logger.info(`remote connect overload wait ms=${remoteConnectOverloadWaitMs} max_waiters=${remoteConnectOverloadMaxWaiters}`);
-    logger.info(`remote connect overload log min interval ms=${remoteConnectOverloadLogMinIntervalMs}`);
-    logger.info(
-      `remote dns cache enabled=${remoteDnsCacheEnabled} prefer_ipv4=${remoteDnsPreferIPv4} ttl_ms=${remoteDnsCacheTtlMs} negative_ttl_ms=${remoteDnsNegativeCacheTtlMs} max_entries=${remoteDnsCacheMaxEntries}`
-    );
-    logger.info(
-      `remote circuit enabled=${remoteCircuitEnabled} failure_threshold=${remoteCircuitFailureThreshold} open_ms=${remoteCircuitOpenMs} log_min_interval_ms=${remoteCircuitLogMinIntervalMs} max_targets=${remoteCircuitMaxTargets}`
-    );
-    logger.info(
-      `remote auto select family enabled=${remoteAutoSelectFamily} attempt_timeout_ms=${remoteAutoSelectFamilyAttemptTimeoutMs}`
-    );
-    logger.info(
-      `device ticket enabled=${deviceTicketEnabled} require=${deviceTicketRequire} ttl_ms=${deviceTicketTtlMs}`
-    );
-    logger.info(
-      `device lease store mode=${deviceLeaseStoreResolvedMode} bind_peer_ip=${deviceLeaseBindPeerIp} default_max_devices=${defaultMaxDevices} lease_ttl_ms=${deviceLeaseTtlMs} policy=${deviceLimitPolicy}`
-    );
-    if (userStore.enabled) {
-      logger.info(`multi-user auth enabled, users_file=${usersFilePath}`);
+    if (metricsReporterEnabled) {
+      const cfgArgv = cfg.__configPath ? ['-c', cfg.__configPath] : [];
+      metricsReporterChild = fork(path.resolve(__dirname, 'metrics_reporter.js'), cfgArgv, {
+        stdio: 'inherit',
+        env: process.env
+      });
+      metricsReporterChild.on('exit', () => {
+        logger.warn('metrics reporter exited');
+        metricsReporterChild = null;
+      });
     }
-    logger.info(`static auth tokens enabled, count=${staticAuthTokens.length}`);
-    startAdminServer({ cfg, userStore, logger, getUserActiveDeviceStats });
+    if (adminCfg.enabled === true) {
+      if (!process.env.NODE_UNIQUE_ID) {
+        const cfgArgv = cfg.__configPath ? ['-c', cfg.__configPath] : [];
+        adminChild = fork(path.resolve(__dirname, 'admin_entry.js'), cfgArgv, {
+          stdio: 'inherit',
+          env: {
+            ...process.env,
+            FOURPX_ADMIN_STANDALONE: '1'
+          }
+        });
+        adminChild.on('exit', () => {
+          logger.warn('admin process exited');
+          adminChild = null;
+        });
+      }
+    }
   });
 }
 
 process.on('SIGTERM', async () => {
+  if (metricsReporterChild && !metricsReporterChild.killed) {
+    metricsReporterChild.kill('SIGTERM');
+  }
+  if (adminChild && !adminChild.killed) {
+    adminChild.kill('SIGTERM');
+  }
   await closeDeviceLeaseStore();
   process.exit(0);
 });
 
 process.on('SIGINT', async () => {
+  if (metricsReporterChild && !metricsReporterChild.killed) {
+    metricsReporterChild.kill('SIGTERM');
+  }
+  if (adminChild && !adminChild.killed) {
+    adminChild.kill('SIGTERM');
+  }
   await closeDeviceLeaseStore();
   process.exit(0);
 });
