@@ -666,15 +666,6 @@ async function touchDeviceLease(authUser, deviceKey) {
   });
 }
 
-function releaseDeviceLease(authUser, deviceKey) {
-  const uid = String(authUser && authUser.id ? authUser.id : '').trim();
-  if (!uid || !deviceKey || !deviceLeaseStore) return;
-  void deviceLeaseStore.releaseLease({
-    userId: uid,
-    deviceKey
-  });
-}
-
 async function getUserActiveDeviceStats(userIds = []) {
   if (!deviceLeaseStore) return {};
   return deviceLeaseStore.getActiveDeviceCountsByUsers(userIds);
@@ -795,18 +786,12 @@ server.on('stream', async (stream, headers) => {
   let authUser = null;
   let deviceTicket = '';
   let deviceLeaseKey = '';
-  let leaseAcquired = false;
   const getAuthResponseHeaders = (statusCode, extraHeaders = {}) => {
     const headersOut = { ':status': statusCode, ...extraHeaders };
     if (deviceTicket) {
       headersOut[deviceTicketHeader] = deviceTicket;
     }
     return headersOut;
-  };
-  const releaseLeaseOnce = () => {
-    if (!leaseAcquired || !authUser || !deviceLeaseKey) return;
-    leaseAcquired = false;
-    releaseDeviceLease(authUser, deviceLeaseKey);
   };
   try {
     const reqMethod = String(headers[':method'] || '');
@@ -876,7 +861,6 @@ server.on('stream', async (stream, headers) => {
       }));
       return;
     }
-    leaseAcquired = true;
     const { host, port } = parseTarget(headers);
     if (logger.enabled('INFO')) {
       logger.info(`stream accepted, trace_id=${traceId}, peer=${remotePeer}, stream=${streamId}, user=${authUser.username}, target=${host}:${port}`);
@@ -894,7 +878,6 @@ server.on('stream', async (stream, headers) => {
       }
       stream.respond(getAuthResponseHeaders(503));
       stream.end();
-      releaseLeaseOnce();
       if (stats.activeStreams > 0) stats.activeStreams -= 1;
       return;
     }
@@ -916,7 +899,6 @@ server.on('stream', async (stream, headers) => {
       }
       stream.respond(getAuthResponseHeaders(502));
       stream.end();
-      releaseLeaseOnce();
       if (stats.activeStreams > 0) stats.activeStreams -= 1;
       return;
     }
@@ -938,7 +920,6 @@ server.on('stream', async (stream, headers) => {
         }
       }
       if (stream.destroyed) {
-        releaseLeaseOnce();
         if (stats.activeStreams > 0) stats.activeStreams -= 1;
         return;
       }
@@ -953,7 +934,6 @@ server.on('stream', async (stream, headers) => {
       }
       stream.respond(getAuthResponseHeaders(503));
       stream.end();
-      releaseLeaseOnce();
       if (stats.activeStreams > 0) stats.activeStreams -= 1;
       return;
     }
@@ -967,7 +947,6 @@ server.on('stream', async (stream, headers) => {
       }
       stream.respond(getAuthResponseHeaders(503));
       stream.end();
-      releaseLeaseOnce();
       if (stats.activeStreams > 0) stats.activeStreams -= 1;
       return;
     }
@@ -1117,7 +1096,6 @@ server.on('stream', async (stream, headers) => {
     });
     stream.on('close', () => {
       if (stats.activeStreams > 0) stats.activeStreams -= 1;
-      releaseLeaseOnce();
       if (!remote.destroyed) remote.destroy();
     });
     remote.on('close', () => {
@@ -1134,7 +1112,6 @@ server.on('stream', async (stream, headers) => {
     logger.error(`bad request on stream, trace_id=${traceId}, peer=${remotePeer}, stream=${streamId}, err_class=${errClass}`, e.message);
     stream.respond({ ':status': 400 });
     stream.end();
-    releaseLeaseOnce();
     if (stats.activeStreams > 0) stats.activeStreams -= 1;
   }
 });
