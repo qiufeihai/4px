@@ -22,6 +22,8 @@ apps/go/*.test
 apps/go/4px
 apps/go/client.json
 apps/go/benchmarks_go/
+apps/go/*.aar
+apps/go/*-sources.jar
 apps/go/gui/client.json
 apps/go/gui/gui
 apps/go/gui/releases/
@@ -34,9 +36,12 @@ apps/node/benchmarks/
 # Android
 .android-sdk/
 apps/mobile/android/.gradle/
+apps/mobile/android/.gradle-user-home/
+apps/mobile/android/.kotlin-user-home/
 apps/mobile/android/local.properties
 apps/mobile/android/build/
 apps/mobile/android/app/build/
+apps/mobile/android/app/libs/
 
 # Temp
 tmp/

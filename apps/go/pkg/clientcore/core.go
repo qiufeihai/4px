@@ -67,6 +67,21 @@ type MuxRuntimeStats struct {
 	Connected        bool   `json:"connected"`
 }
 
+type ControlResult struct {
+	OK               bool   `json:"ok"`
+	Error            string `json:"error,omitempty"`
+	NextDeviceTicket string `json:"nextDeviceTicket,omitempty"`
+}
+
+type SessionStatusResult struct {
+	OK            bool   `json:"ok"`
+	Error         string `json:"error,omitempty"`
+	ExpireAt      string `json:"expireAt,omitempty"`
+	RemainingDays int    `json:"remainingDays"`
+	Expired       bool   `json:"expired"`
+	ServerTime    string `json:"serverTime,omitempty"`
+}
+
 var (
 	levelOrder = map[string]int{
 		"DEBUG": 10,
@@ -250,6 +265,157 @@ func GetSystemProxyStatus() (string, error) {
 func GetMuxRuntimeStats() MuxRuntimeStats {
 	// Proxy-only build: keep API compatibility for GUI status panel.
 	return MuxRuntimeStats{}
+}
+
+func ConnectProbe(cfg *Config, targetHost string, targetPort int) ControlResult {
+	if cfg == nil {
+		return ControlResult{OK: false, Error: "nil config"}
+	}
+	if strings.TrimSpace(targetHost) == "" {
+		return ControlResult{OK: false, Error: "empty target host"}
+	}
+	if targetPort <= 0 || targetPort > 65535 {
+		return ControlResult{OK: false, Error: "invalid target port"}
+	}
+	client, err := newHTTPClient(cfg)
+	if err != nil {
+		return ControlResult{OK: false, Error: err.Error()}
+	}
+	upstreamPath := strings.TrimSpace(cfg.UpstreamPath)
+	if upstreamPath == "" {
+		upstreamPath = "/proxy"
+	}
+	if !strings.HasPrefix(upstreamPath, "/") {
+		upstreamPath = "/" + upstreamPath
+	}
+	url := fmt.Sprintf("https://%s:%d%s", cfg.UpstreamHost, cfg.UpstreamPort, upstreamPath)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(cfg.ResponseHeaderTimeoutMS)*time.Millisecond)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, http.NoBody)
+	if err != nil {
+		return ControlResult{OK: false, Error: err.Error()}
+	}
+	req.Header.Set("x-auth-token", cfg.AuthToken)
+	req.Header.Set("x-target-host", strings.TrimSpace(targetHost))
+	req.Header.Set("x-target-port", strconv.Itoa(targetPort))
+	if ticket := strings.TrimSpace(cfg.DeviceTicket); ticket != "" {
+		req.Header.Set("x-device-ticket", ticket)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return ControlResult{OK: false, Error: err.Error()}
+	}
+	defer resp.Body.Close()
+	nextTicket := strings.TrimSpace(resp.Header.Get("x-device-ticket"))
+	if resp.StatusCode != http.StatusOK {
+		authReason := strings.TrimSpace(resp.Header.Get("x-auth-reason"))
+		if authReason != "" {
+			return ControlResult{
+				OK:               false,
+				Error:            fmt.Sprintf("status=%d auth_reason=%s", resp.StatusCode, authReason),
+				NextDeviceTicket: nextTicket,
+			}
+		}
+		return ControlResult{
+			OK:               false,
+			Error:            fmt.Sprintf("status=%d", resp.StatusCode),
+			NextDeviceTicket: nextTicket,
+		}
+	}
+	return ControlResult{OK: true, NextDeviceTicket: nextTicket}
+}
+
+func SendOffline(cfg *Config) ControlResult {
+	if cfg == nil {
+		return ControlResult{OK: false, Error: "nil config"}
+	}
+	ticket := strings.TrimSpace(cfg.DeviceTicket)
+	if ticket == "" {
+		return ControlResult{OK: true}
+	}
+	client, err := newHTTPClient(cfg)
+	if err != nil {
+		return ControlResult{OK: false, Error: err.Error()}
+	}
+	url := fmt.Sprintf("https://%s:%d/session/offline", cfg.UpstreamHost, cfg.UpstreamPort)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, http.NoBody)
+	if err != nil {
+		return ControlResult{OK: false, Error: err.Error()}
+	}
+	req.Header.Set("x-auth-token", cfg.AuthToken)
+	req.Header.Set("x-device-ticket", ticket)
+	resp, err := client.Do(req)
+	if err != nil {
+		return ControlResult{OK: false, Error: err.Error()}
+	}
+	defer resp.Body.Close()
+	nextTicket := strings.TrimSpace(resp.Header.Get("x-device-ticket"))
+	if resp.StatusCode != http.StatusOK {
+		return ControlResult{
+			OK:               false,
+			Error:            fmt.Sprintf("status=%d", resp.StatusCode),
+			NextDeviceTicket: nextTicket,
+		}
+	}
+	return ControlResult{OK: true, NextDeviceTicket: nextTicket}
+}
+
+func GetSessionStatus(cfg *Config) SessionStatusResult {
+	if cfg == nil {
+		return SessionStatusResult{OK: false, Error: "nil config"}
+	}
+	client, err := newHTTPClient(cfg)
+	if err != nil {
+		return SessionStatusResult{OK: false, Error: err.Error()}
+	}
+	url := fmt.Sprintf("https://%s:%d/session/status", cfg.UpstreamHost, cfg.UpstreamPort)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
+	if err != nil {
+		return SessionStatusResult{OK: false, Error: err.Error()}
+	}
+	req.Header.Set("x-auth-token", cfg.AuthToken)
+	if ticket := strings.TrimSpace(cfg.DeviceTicket); ticket != "" {
+		req.Header.Set("x-device-ticket", ticket)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return SessionStatusResult{OK: false, Error: err.Error()}
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		authReason := strings.TrimSpace(resp.Header.Get("x-auth-reason"))
+		if authReason != "" {
+			return SessionStatusResult{
+				OK:    false,
+				Error: fmt.Sprintf("status=%d auth_reason=%s", resp.StatusCode, authReason),
+			}
+		}
+		return SessionStatusResult{
+			OK:    false,
+			Error: fmt.Sprintf("status=%d", resp.StatusCode),
+		}
+	}
+	var payload struct {
+		OK            bool   `json:"ok"`
+		ExpireAt      string `json:"expireAt"`
+		RemainingDays int    `json:"remainingDays"`
+		Expired       bool   `json:"expired"`
+		ServerTime    string `json:"serverTime"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return SessionStatusResult{OK: false, Error: err.Error()}
+	}
+	return SessionStatusResult{
+		OK:            payload.OK,
+		ExpireAt:      strings.TrimSpace(payload.ExpireAt),
+		RemainingDays: payload.RemainingDays,
+		Expired:       payload.Expired,
+		ServerTime:    strings.TrimSpace(payload.ServerTime),
+	}
 }
 
 func RunProxyWithContext(ctx context.Context, cfg *Config) error {

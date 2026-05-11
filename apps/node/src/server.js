@@ -733,6 +733,26 @@ function calcMaxDevices(authUser) {
   return defaultMaxDevices;
 }
 
+function buildSessionStatus(authUser) {
+  const nowMs = Date.now();
+  const expireAtMs = Number(authUser && authUser.expireAtMs ? authUser.expireAtMs : 0);
+  if (!Number.isFinite(expireAtMs) || expireAtMs <= 0) {
+    return {
+      expireAt: null,
+      remainingDays: -1,
+      expired: false
+    };
+  }
+  const diffMs = expireAtMs - nowMs;
+  const expired = diffMs <= 0;
+  const remainingDays = expired ? 0 : Math.max(1, Math.ceil(diffMs / 86400000));
+  return {
+    expireAt: new Date(expireAtMs).toISOString(),
+    remainingDays,
+    expired
+  };
+}
+
 async function touchDeviceLease(authUser, deviceKey) {
   const uid = String(authUser && authUser.id ? authUser.id : '').trim();
   if (!uid || !deviceKey) return { ok: true, activeDevices: 0, maxDevices: calcMaxDevices(authUser) };
@@ -902,7 +922,8 @@ server.on('stream', async (stream, headers) => {
     }
     const isProxyV1 = reqMethod === 'POST' && reqPath === '/proxy';
     const isSessionOffline = reqMethod === 'POST' && reqPath === '/session/offline';
-    if (!isProxyV1 && !isSessionOffline) {
+    const isSessionStatus = reqMethod === 'GET' && reqPath === '/session/status';
+    if (!isProxyV1 && !isSessionOffline && !isSessionStatus) {
       stats.routeRejectedTotal += 1;
       markServerError('non-retryable');
       logger.warn(`reject invalid route, trace_id=${traceId}, peer=${remotePeer}, stream=${streamId}, method=${reqMethod}, path=${reqPath}, err_class=non-retryable`);
@@ -923,6 +944,18 @@ server.on('stream', async (stream, headers) => {
       return;
     }
     authUser = authResult.user;
+    if (isSessionStatus) {
+      const sessionStatus = buildSessionStatus(authUser);
+      stream.respond(getAuthResponseHeaders(200, {
+        'content-type': 'application/json; charset=utf-8'
+      }));
+      stream.end(JSON.stringify({
+        ok: true,
+        ...sessionStatus,
+        serverTime: new Date().toISOString()
+      }));
+      return;
+    }
     const remoteIp = normalizeRemoteIp(stream.session && stream.session.socket && stream.session.socket.remoteAddress);
     const deviceIdentity = resolveDeviceIdentity(authUser, headers, remoteIp, {
       allowBootstrap: !isSessionOffline

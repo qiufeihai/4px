@@ -229,6 +229,21 @@ type Stats struct {
 	LogLevel    string `json:"logLevel"`
 }
 
+type BridgeResult struct {
+	OK               bool   `json:"ok"`
+	Error            string `json:"error,omitempty"`
+	NextDeviceTicket string `json:"nextDeviceTicket,omitempty"`
+}
+
+type SessionStatusBridgeResult struct {
+	OK            bool   `json:"ok"`
+	Error         string `json:"error,omitempty"`
+	ExpireAt      string `json:"expireAt,omitempty"`
+	RemainingDays int    `json:"remainingDays"`
+	Expired       bool   `json:"expired"`
+	ServerTime    string `json:"serverTime,omitempty"`
+}
+
 // GetStats returns a JSON string for easy consumption from Android/iOS.
 func GetStats() string {
 	mu.Lock()
@@ -249,6 +264,160 @@ func GetLastError() string {
 	mu.Lock()
 	defer mu.Unlock()
 	return lastErr
+}
+
+func ConnectProbe(configJSON string) string {
+	mu.Lock()
+	if configJSON != "" {
+		var cfg Config
+		if err := json.Unmarshal([]byte(configJSON), &cfg); err != nil {
+			setLastErrorLocked(err)
+			out, _ := json.Marshal(BridgeResult{OK: false, Error: err.Error()})
+			mu.Unlock()
+			return string(out)
+		}
+		lastCfg = normalizeConfig(cfg)
+	}
+	cfg := lastCfg
+	mu.Unlock()
+
+	runCfg := &clientcore.Config{
+		SocksListen:              cfg.SocksListen,
+		HTTPListen:               "",
+		UpstreamHost:             cfg.UpstreamHost,
+		UpstreamPort:             cfg.UpstreamPort,
+		UpstreamPath:             "/proxy",
+		ServerName:               cfg.ServerName,
+		AuthToken:                cfg.AuthToken,
+		RejectUnauthorized:       cfg.RejectUnauthorized,
+		CAFile:                   "",
+		DeviceTicket:             cfg.DeviceTicket,
+		UpstreamConnectTimeoutMS: 15000,
+		ResponseHeaderTimeoutMS:  10000,
+		IdleTimeoutMS:            300000,
+		LogLevel:                 "WARN",
+	}
+	res := clientcore.ConnectProbe(runCfg, "www.google.com", 443)
+	if res.NextDeviceTicket != "" {
+		mu.Lock()
+		lastCfg.DeviceTicket = res.NextDeviceTicket
+		mu.Unlock()
+	}
+	mu.Lock()
+	if res.OK {
+		setLastErrorLocked(nil)
+	} else {
+		setLastErrorLocked(errors.New(res.Error))
+	}
+	mu.Unlock()
+	out, _ := json.Marshal(BridgeResult{
+		OK:               res.OK,
+		Error:            res.Error,
+		NextDeviceTicket: res.NextDeviceTicket,
+	})
+	return string(out)
+}
+
+func Offline(configJSON string) string {
+	mu.Lock()
+	if configJSON != "" {
+		var cfg Config
+		if err := json.Unmarshal([]byte(configJSON), &cfg); err != nil {
+			setLastErrorLocked(err)
+			out, _ := json.Marshal(BridgeResult{OK: false, Error: err.Error()})
+			mu.Unlock()
+			return string(out)
+		}
+		lastCfg = normalizeConfig(cfg)
+	}
+	cfg := lastCfg
+	mu.Unlock()
+
+	runCfg := &clientcore.Config{
+		SocksListen:              cfg.SocksListen,
+		HTTPListen:               "",
+		UpstreamHost:             cfg.UpstreamHost,
+		UpstreamPort:             cfg.UpstreamPort,
+		UpstreamPath:             "/proxy",
+		ServerName:               cfg.ServerName,
+		AuthToken:                cfg.AuthToken,
+		RejectUnauthorized:       cfg.RejectUnauthorized,
+		CAFile:                   "",
+		DeviceTicket:             cfg.DeviceTicket,
+		UpstreamConnectTimeoutMS: 15000,
+		ResponseHeaderTimeoutMS:  10000,
+		IdleTimeoutMS:            300000,
+		LogLevel:                 "WARN",
+	}
+	res := clientcore.SendOffline(runCfg)
+	if res.NextDeviceTicket != "" {
+		mu.Lock()
+		lastCfg.DeviceTicket = res.NextDeviceTicket
+		mu.Unlock()
+	}
+	mu.Lock()
+	if res.OK {
+		setLastErrorLocked(nil)
+	} else {
+		setLastErrorLocked(errors.New(res.Error))
+	}
+	mu.Unlock()
+	out, _ := json.Marshal(BridgeResult{
+		OK:               res.OK,
+		Error:            res.Error,
+		NextDeviceTicket: res.NextDeviceTicket,
+	})
+	return string(out)
+}
+
+func SessionStatus(configJSON string) string {
+	mu.Lock()
+	if configJSON != "" {
+		var cfg Config
+		if err := json.Unmarshal([]byte(configJSON), &cfg); err != nil {
+			setLastErrorLocked(err)
+			out, _ := json.Marshal(SessionStatusBridgeResult{OK: false, Error: err.Error()})
+			mu.Unlock()
+			return string(out)
+		}
+		lastCfg = normalizeConfig(cfg)
+	}
+	cfg := lastCfg
+	mu.Unlock()
+
+	runCfg := &clientcore.Config{
+		SocksListen:              cfg.SocksListen,
+		HTTPListen:               "",
+		UpstreamHost:             cfg.UpstreamHost,
+		UpstreamPort:             cfg.UpstreamPort,
+		UpstreamPath:             "/proxy",
+		ServerName:               cfg.ServerName,
+		AuthToken:                cfg.AuthToken,
+		RejectUnauthorized:       cfg.RejectUnauthorized,
+		CAFile:                   "",
+		DeviceTicket:             cfg.DeviceTicket,
+		UpstreamConnectTimeoutMS: 15000,
+		ResponseHeaderTimeoutMS:  10000,
+		IdleTimeoutMS:            300000,
+		LogLevel:                 "WARN",
+	}
+	res := clientcore.GetSessionStatus(runCfg)
+	mu.Lock()
+	if res.OK {
+		setLastErrorLocked(nil)
+	} else {
+		setLastErrorLocked(errors.New(res.Error))
+	}
+	mu.Unlock()
+	out, _ := json.Marshal(SessionStatusBridgeResult{
+		OK:            res.OK,
+		Error:         res.Error,
+		ExpireAt:      res.ExpireAt,
+		RemainingDays: res.RemainingDays,
+		Expired:       res.Expired,
+		ServerTime:    res.ServerTime,
+	})
+	return string(out)
 }
 
 func init() {

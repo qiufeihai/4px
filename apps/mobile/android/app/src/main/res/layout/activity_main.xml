@@ -7,27 +7,20 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="vertical"
-        android:padding="20dp">
+        android:padding="24dp">
 
         <TextView
             android:id="@+id/titleText"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:text="@string/title_main"
-            android:textAppearance="@style/TextAppearance.Material3.HeadlineSmall" />
-
-        <TextView
-            android:id="@+id/subtitleText"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:text="@string/subtitle_main"
-            android:textAppearance="@style/TextAppearance.Material3.BodyMedium" />
+            android:textAppearance="@style/TextAppearance.Material3.HeadlineSmall"
+            android:textStyle="bold" />
 
         <com.google.android.material.textfield.TextInputLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
+            android:layout_marginTop="20dp"
             android:hint="@string/label_server_host">
 
             <com.google.android.material.textfield.TextInputEditText
@@ -36,7 +29,8 @@
                 android:layout_height="wrap_content"
                 android:hint="@string/hint_server_host"
                 android:imeOptions="actionNext"
-                android:inputType="textUri" />
+                android:inputType="textUri"
+                android:singleLine="true" />
         </com.google.android.material.textfield.TextInputLayout>
 
         <com.google.android.material.textfield.TextInputLayout
@@ -51,7 +45,8 @@
                 android:layout_height="wrap_content"
                 android:hint="@string/hint_server_port"
                 android:imeOptions="actionNext"
-                android:inputType="number" />
+                android:inputType="number"
+                android:singleLine="true" />
         </com.google.android.material.textfield.TextInputLayout>
 
         <com.google.android.material.textfield.TextInputLayout
@@ -65,78 +60,16 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:hint="@string/hint_auth_token"
-                android:imeOptions="actionNext"
-                android:inputType="textNoSuggestions" />
-        </com.google.android.material.textfield.TextInputLayout>
-
-        <com.google.android.material.textfield.TextInputLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:hint="@string/label_device_ticket">
-
-            <com.google.android.material.textfield.TextInputEditText
-                android:id="@+id/ticketInput"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:hint="@string/hint_device_ticket"
-                android:imeOptions="actionNext"
-                android:inputType="textNoSuggestions" />
-        </com.google.android.material.textfield.TextInputLayout>
-
-        <com.google.android.material.textfield.TextInputLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:hint="@string/label_probe_host">
-
-            <com.google.android.material.textfield.TextInputEditText
-                android:id="@+id/probeHostInput"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:hint="@string/hint_probe_host"
-                android:imeOptions="actionNext"
-                android:inputType="textUri" />
-        </com.google.android.material.textfield.TextInputLayout>
-
-        <com.google.android.material.textfield.TextInputLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:hint="@string/label_probe_port">
-
-            <com.google.android.material.textfield.TextInputEditText
-                android:id="@+id/probePortInput"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:hint="@string/hint_probe_port"
                 android:imeOptions="actionDone"
-                android:inputType="number" />
+                android:inputType="textPassword|textNoSuggestions"
+                android:singleLine="true" />
         </com.google.android.material.textfield.TextInputLayout>
-
-        <com.google.android.material.checkbox.MaterialCheckBox
-            android:id="@+id/insecureTlsCheck"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="10dp"
-            android:text="@string/label_insecure_tls" />
 
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="14dp"
+            android:layout_marginTop="16dp"
             android:orientation="horizontal">
-
-            <Button
-                android:id="@+id/saveButton"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:text="@string/btn_save" />
-
-            <Space
-                android:layout_width="8dp"
-                android:layout_height="1dp" />
 
             <Button
                 android:id="@+id/connectButton"
@@ -144,14 +77,32 @@
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
                 android:text="@string/btn_connect" />
+
+            <Space
+                android:layout_width="10dp"
+                android:layout_height="1dp" />
+
+            <Button
+                android:id="@+id/disconnectButton"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/btn_disconnect" />
         </LinearLayout>
 
         <Button
-            android:id="@+id/disconnectButton"
+            android:id="@+id/logsButton"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
-            android:text="@string/btn_disconnect" />
+            android:text="@string/btn_view_logs" />
+
+        <Button
+            android:id="@+id/refreshExpiryButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/btn_refresh_expiry" />
 
         <ProgressBar
             android:id="@+id/loadingBar"
@@ -159,15 +110,23 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_gravity="center_horizontal"
-            android:layout_marginTop="12dp"
+            android:layout_marginTop="14dp"
             android:visibility="gone" />
 
         <TextView
             android:id="@+id/statusText"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="10dp"
+            android:layout_marginTop="12dp"
             android:text="@string/status_idle"
+            android:textAppearance="@style/TextAppearance.Material3.BodyMedium" />
+
+        <TextView
+            android:id="@+id/expiryText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:text="@string/expiry_unknown"
             android:textAppearance="@style/TextAppearance.Material3.BodySmall" />
 
     </LinearLayout>

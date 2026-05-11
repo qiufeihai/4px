@@ -27,6 +27,15 @@ type ClientStatus struct {
 	LastError     string `json:"lastError"`
 }
 
+type SessionStatus struct {
+	OK            bool   `json:"ok"`
+	Error         string `json:"error,omitempty"`
+	ExpireAt      string `json:"expireAt,omitempty"`
+	RemainingDays int    `json:"remainingDays"`
+	Expired       bool   `json:"expired"`
+	ServerTime    string `json:"serverTime,omitempty"`
+}
+
 type App struct {
 	ctx            context.Context
 	mu             sync.Mutex
@@ -320,6 +329,22 @@ func (a *App) SystemProxyStatus(configPath string) (string, error) {
 		return out, err
 	}
 	return out, nil
+}
+
+func (a *App) GetSessionStatus(configPath string) SessionStatus {
+	cfg, err := a.loadClientCoreConfig(configPath)
+	if err != nil {
+		return SessionStatus{OK: false, Error: err.Error()}
+	}
+	res := clientcore.GetSessionStatus(cfg)
+	return SessionStatus{
+		OK:            res.OK,
+		Error:         res.Error,
+		ExpireAt:      res.ExpireAt,
+		RemainingDays: res.RemainingDays,
+		Expired:       res.Expired,
+		ServerTime:    res.ServerTime,
+	}
 }
 
 func (a *App) pushLogLineLocked(line string) {

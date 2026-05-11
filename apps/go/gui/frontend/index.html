@@ -247,9 +247,11 @@
         <div class="status-item" id="statusStarted">启动时间: -</div>
         <div class="status-item" id="statusExited">退出时间: -</div>
         <div class="status-item" id="statusProxy">系统代理: -</div>
+        <div class="status-item" id="statusExpiry">有效期: -</div>
       </div>
       <div class="row" style="margin-bottom: 8px;">
         <button id="btnRefreshStatus" class="secondary">刷新状态</button>
+        <button id="btnRefreshExpiry" class="secondary">刷新有效期</button>
         <button id="btnRefreshLogs" class="secondary">刷新日志</button>
         <button id="btnClearLogs" class="secondary">清空日志</button>
       </div>
@@ -283,6 +285,7 @@
       started: document.getElementById("statusStarted"),
       exited: document.getElementById("statusExited"),
       proxy: document.getElementById("statusProxy"),
+      expiry: document.getElementById("statusExpiry"),
       statusSummary: document.getElementById("statusSummary")
     };
     let proxyState = "unknown";
@@ -290,6 +293,7 @@
     let lastAuthIssueToastAt = 0;
     let hasUnsavedConfig = false;
     let lastSavedConfigSnapshot = "";
+    let sessionStatus = null;
 
     function api() {
       return window.go && window.go.main && window.go.main.App ? window.go.main.App : null;
@@ -523,6 +527,23 @@
       return v ? "是" : "否";
     }
 
+    function formatExpiryText(status) {
+      if (!status) return "未获取";
+      if (!status.ok) {
+        return "获取失败";
+      }
+      if (Number(status.remainingDays) < 0 || !status.expireAt) {
+        return "长期有效";
+      }
+      if (status.expired || Number(status.remainingDays) <= 0) {
+        return "已过期";
+      }
+      if (Number(status.remainingDays) === 1) {
+        return "不足 1 天";
+      }
+      return `剩余 ${status.remainingDays} 天`;
+    }
+
     function formatDisplayTime(value) {
       const raw = String(value || "").trim();
       if (!raw) return "-";
@@ -626,6 +647,7 @@
         ui.statusSummary.textContent =
           "状态摘要: 运行中=" + toYesNoText(!!s.running) +
           " | 系统代理=" + proxyStateLabel(proxyState) +
+          " | 有效期=" + formatExpiryText(sessionStatus) +
           " | 未保存配置=" + toYesNoText(hasUnsavedConfig) +
           (authIssueHint ? " | 鉴权问题=" + authIssueHint : "") +
           (s.lastError ? " | 客户端错误=" + s.lastError : "");
@@ -642,6 +664,39 @@
         ui.stopBtn.disabled = !s.running;
       } catch (err) {
         showMessage("状态刷新失败: " + (err || ""), true);
+      }
+    }
+
+    async function refreshSessionStatus(showToast) {
+      const backend = api();
+      if (!backend) return;
+      try {
+        const s = await backend.GetSessionStatus(getConfigPath());
+        sessionStatus = s || null;
+        if (!s || !s.ok) {
+          ui.expiry.textContent = "有效期: 获取失败";
+          if (showToast) {
+            showMessage("有效期获取失败: " + ((s && s.error) || "未知错误"), true);
+          }
+        } else if (Number(s.remainingDays) < 0 || !s.expireAt) {
+          ui.expiry.textContent = "有效期: 长期有效";
+          if (showToast) showMessage("有效期状态已刷新", false);
+        } else if (s.expired || Number(s.remainingDays) <= 0) {
+          ui.expiry.textContent = "有效期: 已过期";
+          if (showToast) showMessage("账号已过期，请及时续期", true);
+        } else if (Number(s.remainingDays) === 1) {
+          ui.expiry.textContent = "有效期: 不足 1 天";
+          if (showToast) showMessage("有效期状态已刷新", false);
+        } else {
+          ui.expiry.textContent = "有效期: 剩余 " + s.remainingDays + " 天";
+          if (showToast) showMessage("有效期状态已刷新", false);
+        }
+      } catch (err) {
+        sessionStatus = null;
+        ui.expiry.textContent = "有效期: 获取失败";
+        if (showToast) showMessage("有效期获取失败: " + (err || ""), true);
+      } finally {
+        await refreshStatus();
       }
     }
 
@@ -708,6 +763,7 @@
       document.getElementById("btnProxyEnable").addEventListener("click", () => setProxyEnabled(true));
       document.getElementById("btnProxyDisable").addEventListener("click", () => setProxyEnabled(false));
       document.getElementById("btnRefreshStatus").addEventListener("click", refreshStatus);
+      document.getElementById("btnRefreshExpiry").addEventListener("click", () => refreshSessionStatus(true));
       document.getElementById("btnRefreshLogs").addEventListener("click", refreshLogs);
       document.getElementById("btnClearLogs").addEventListener("click", clearLogs);
       Object.values(fields).forEach((el) => {
@@ -729,6 +785,7 @@
       setInterval(refreshStatus, 3000);
       setInterval(refreshLogs, 2000);
       await loadConfig();
+      await refreshSessionStatus(false);
     }
 
     boot();

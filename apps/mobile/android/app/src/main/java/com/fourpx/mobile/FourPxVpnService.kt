@@ -48,6 +48,7 @@ class FourPxVpnService : VpnService() {
 
     private fun startVpn(socksHost: String, socksPort: Int, configJson: String) {
         if (running.get()) return
+        AppLog.i(TAG, "start vpn socks=$socksHost:$socksPort")
         val builder = Builder()
             .setSession("4px Mobile")
             .setMtu(1500)
@@ -61,37 +62,40 @@ class FourPxVpnService : VpnService() {
         }
 
         val established = builder.establish() ?: return
-        vpnInterface = established
+        // Detach FD ownership before passing into Go runtime to avoid fdsan double-close crashes.
+        val tunFd = established.detachFd()
+        vpnInterface = null
         startForeground(NOTIFICATION_ID, buildNotification())
         val proxy = "socks5://$socksHost:$socksPort"
-        val started = startTun2SocksBridge(established.fd, proxy, configJson)
+        val started = startTun2SocksBridge(tunFd, proxy, configJson)
         if (!started) {
             Log.e(TAG, "start tun2socks bridge failed, proxy=$proxy")
+            AppLog.e(TAG, "start bridge failed proxy=$proxy")
             try {
-                established.close()
+                ParcelFileDescriptor.adoptFd(tunFd).close()
             } catch (_: Exception) {
             }
-            vpnInterface = null
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
             return
         }
+        AppLog.i(TAG, "vpn started")
         running.set(true)
     }
 
     private fun stopVpn() {
+        AppLog.i(TAG, "stop vpn requested")
         stopTun2SocksBridge()
         if (!running.getAndSet(false)) {
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
             return
         }
-        try {
-            vpnInterface?.close()
-        } catch (_: Exception) {}
+        // Tun fd ownership was detached and transferred to Go engine.
         vpnInterface = null
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
+        AppLog.i(TAG, "vpn stopped")
     }
 
     private fun startTun2SocksBridge(tunFd: Int, proxy: String, configJson: String): Boolean {
@@ -117,23 +121,28 @@ class FourPxVpnService : VpnService() {
                 }
                 if (ret is Throwable) {
                     Log.e(TAG, "tunbridge start returned throwable", ret)
+                    AppLog.e(TAG, "bridge start returned throwable: ${ret.message}")
                     return false
                 }
                 engineBridgeClass = cls
                 engineStopMethodName = resolveStopMethod(cls).name
                 Log.i(TAG, "tun2socks bridge started via $className")
+                AppLog.i(TAG, "bridge started via $className")
                 return true
             } catch (err: ClassNotFoundException) {
                 continue
             } catch (err: NoSuchMethodException) {
                 Log.e(TAG, "tunbridge start method not found in $className", err)
+                AppLog.e(TAG, "bridge start method missing in $className")
                 return false
             } catch (err: Exception) {
                 Log.e(TAG, "tunbridge start failed in $className", err)
+                AppLog.e(TAG, "bridge start failed in $className: ${err.message}")
                 return false
             }
         }
         Log.e(TAG, "tun2socks bridge class not found, ensure tun2socks.aar is present")
+        AppLog.e(TAG, "bridge class not found, check tun2socks.aar")
         return false
     }
 
@@ -143,6 +152,7 @@ class FourPxVpnService : VpnService() {
             updateMethod.invoke(null, configJson)
         } catch (_: NoSuchMethodException) {
             Log.w(TAG, "tunbridge UpdateConfig not found, continue with defaults")
+            AppLog.i(TAG, "bridge UpdateConfig missing, continue defaults")
         }
     }
 
@@ -187,9 +197,11 @@ class FourPxVpnService : VpnService() {
             val ret = stopMethod.invoke(null)
             if (ret is Throwable) {
                 Log.w(TAG, "tunbridge stop returned throwable", ret)
+                AppLog.e(TAG, "bridge stop returned throwable: ${ret.message}")
             }
         } catch (err: Exception) {
             Log.w(TAG, "tunbridge stop failed", err)
+            AppLog.e(TAG, "bridge stop failed: ${err.message}")
         } finally {
             engineBridgeClass = null
             engineStopMethodName = ""
@@ -206,7 +218,7 @@ class FourPxVpnService : VpnService() {
         }
         val pendingIntent = PendingIntent.getActivity(this, 0, openIntent, pendingFlags)
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.stat_sys_warning)
+            .setSmallIcon(R.mipmap.ic_launcher)
             .setContentTitle("4px VPN")
             .setContentText("VPN service running")
             .setOngoing(true)

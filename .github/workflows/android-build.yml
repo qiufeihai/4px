@@ -1,17 +1,22 @@
-name: Android Build Artifacts
+name: Android Release Build
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version label (e.g. v0.6.0)"
+        description: "Release version label (e.g. v0.8.0)"
         required: true
-        default: "v0.0.0"
+        default: "v0.8.0"
 
 jobs:
   build-android:
-    name: Build Android (ubuntu)
+    name: Build Android Release (ubuntu)
     runs-on: ubuntu-latest
+    env:
+      MOBILE_VERSION: "v0.0.0-20260508232728-bebd421c7fa8"
+      ANDROID_API_LEVEL: "34"
+      ANDROID_BUILD_TOOLS: "34.0.0"
+      ANDROID_NDK_VERSION: "27.0.12077973"
 
     steps:
       - name: Checkout
@@ -37,9 +42,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            ${{ env.ANDROID_SDK_ROOT }}/ndk/27.0.12077973
+            ${{ env.ANDROID_SDK_ROOT }}/ndk/${{ env.ANDROID_NDK_VERSION }}
             ~/.cache/gomobile
-          key: ${{ runner.os }}-android-ndk27-gomobile-v1
+          key: ${{ runner.os }}-android-ndk${{ env.ANDROID_NDK_VERSION }}-gomobile-${{ env.MOBILE_VERSION }}-v2
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -51,14 +56,13 @@ jobs:
         run: |
           set -euo pipefail
           yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager "platforms;android-34" "build-tools;34.0.0" "ndk;27.0.12077973"
+          sdkmanager "platforms;android-${ANDROID_API_LEVEL}" "build-tools;${ANDROID_BUILD_TOOLS}" "ndk;${ANDROID_NDK_VERSION}"
 
       - name: Install gomobile
         shell: bash
         working-directory: apps/go
         run: |
           set -euo pipefail
-          MOBILE_VERSION="v0.0.0-20260508232728-bebd421c7fa8"
           go get golang.org/x/mobile/bind@"$MOBILE_VERSION"
           go install golang.org/x/mobile/cmd/gomobile@"$MOBILE_VERSION"
           go install golang.org/x/mobile/cmd/gobind@"$MOBILE_VERSION"
@@ -69,7 +73,7 @@ jobs:
         shell: bash
         working-directory: apps/go
         env:
-          ANDROID_NDK_HOME: ${{ env.ANDROID_SDK_ROOT }}/ndk/27.0.12077973
+          ANDROID_NDK_HOME: ${{ env.ANDROID_SDK_ROOT }}/ndk/${{ env.ANDROID_NDK_VERSION }}
         run: |
           set -euo pipefail
           gomobile bind -androidapi 26 -target=android/arm64,android/amd64 -o tun2socks.aar ./pkg/tunbridge
@@ -82,26 +86,26 @@ jobs:
           mkdir -p apps/mobile/android/app/libs
           cp apps/go/tun2socks.aar apps/mobile/android/app/libs/tun2socks.aar
 
-      - name: Assemble Debug APK
+      - name: Assemble Release APK
         shell: bash
         run: |
           set -euo pipefail
-          gradle -p apps/mobile/android :app:assembleDebug --no-daemon --parallel --build-cache
+          gradle -p apps/mobile/android :app:assembleRelease --no-daemon --parallel --build-cache
 
       - name: Prepare artifact metadata
         shell: bash
         run: |
           set -euo pipefail
-          VERSION="${{ inputs.version || 'v0.0.0' }}"
+          VERSION="${{ inputs.version }}"
           GITSHA="$(git rev-parse --short HEAD)"
-          echo "APK_NAME=4px-android_${VERSION}_debug_${GITSHA}" >> "$GITHUB_ENV"
-          echo "AAR_NAME=4px-tun2socks_${VERSION}_${GITSHA}" >> "$GITHUB_ENV"
+          echo "APK_NAME=4px-android_${VERSION}_release_unsigned_${GITSHA}" >> "$GITHUB_ENV"
+          echo "AAR_NAME=4px-tun2socks_${VERSION}_release_${GITSHA}" >> "$GITHUB_ENV"
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.APK_NAME }}
-          path: apps/mobile/android/app/build/outputs/apk/debug/app-debug.apk
+          path: apps/mobile/android/app/build/outputs/apk/release/app-release-unsigned.apk
           if-no-files-found: error
 
       - name: Upload AAR artifact
