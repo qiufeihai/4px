@@ -2,33 +2,15 @@
 
 This directory hosts mobile client work for 4px.
 
-Current plan:
+Current layout:
 
-- `android/`: Android client (MVP first)
-- `ios/`: iOS client (future)
+- `android/`: Android client（已完成 MVP）
+- `ios/`: iOS client（控制面 MVP 进行中）
 
-MVP scope for Android:
+Shared direction:
 
-- Basic config form
-- Connect/disconnect state
-- Placeholder for VPNService integration
-- Reuse existing 4px server endpoints and auth model
-
-## Current decision
-
-- Android work is paused for now due to missing local Android toolchain.
-- Existing skeleton under `apps/mobile/android` remains as the resume baseline.
-
-## Resume checklist (for future AI continuation)
-
-1. Install Android prerequisites on macOS:
-   - JDK 17
-   - Android command-line tools (or Android Studio)
-   - Android SDK platform/build-tools/platform-tools
-2. Open and sync project at `apps/mobile/android`.
-3. Build debug APK and verify output under `app/build/outputs/apk/debug/`.
-4. Continue implementation in this order:
-   - Config persistence
-   - Connect/disconnect state machine
-   - VPNService tunnel integration
-   - proxy default wiring and runtime diagnostics
+- Reuse Go `clientcore` via `gomobile` bridge
+- Keep UI minimal with Chinese copy
+- Provide localized error hints, expiry query, and local logs
+- iOS supports local script and manual GitHub workflow build
+- iOS data-plane uses PacketTunnel Extension skeleton

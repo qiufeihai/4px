@@ -42,6 +42,7 @@ type Config struct {
 	RejectUnauthorized bool   `json:"rejectUnauthorized"`
 	ServerName         string `json:"serverName"`
 	DeviceTicket       string `json:"deviceTicket"`
+	TunFD              int    `json:"tunFd"`
 }
 
 func normalizeConfig(in Config) Config {
@@ -153,19 +154,38 @@ func stopEmbeddedProxyLocked() {
 func Start(fd int, proxy string) {
 	mu.Lock()
 	defer mu.Unlock()
-	if running {
+	if err := startLocked(fd, proxy); err != nil {
+		setLastErrorLocked(err)
+		panic(err.Error())
+	}
+}
+
+// Stop shuts tun2socks down.
+func Stop() {
+	mu.Lock()
+	defer mu.Unlock()
+	if !running {
+		stopEmbeddedProxyLocked()
 		return
 	}
+	engine.Stop()
+	stopEmbeddedProxyLocked()
+	running = false
+}
+
+func startLocked(fd int, proxy string) error {
+	if running {
+		return nil
+	}
 	if fd <= 0 {
-		panic("tunbridge: invalid fd")
+		return errors.New("tunbridge: invalid fd")
 	}
 	cfg := normalizeConfig(lastCfg)
 	if proxy != "" {
 		cfg.Proxy = proxy
 	}
 	if err := runEmbeddedProxyLocked(cfg); err != nil {
-		setLastErrorLocked(err)
-		panic(err.Error())
+		return err
 	}
 	proxyURL := makeProxyURL(cfg)
 	key := &engine.Key{
@@ -182,19 +202,7 @@ func Start(fd int, proxy string) {
 	startedAt = time.Now().UnixMilli()
 	cfg.Proxy = proxyURL
 	lastCfg = cfg
-}
-
-// Stop shuts tun2socks down.
-func Stop() {
-	mu.Lock()
-	defer mu.Unlock()
-	if !running {
-		stopEmbeddedProxyLocked()
-		return
-	}
-	engine.Stop()
-	stopEmbeddedProxyLocked()
-	running = false
+	return nil
 }
 
 // IsRunning returns current runtime state.
@@ -242,6 +250,11 @@ type SessionStatusBridgeResult struct {
 	RemainingDays int    `json:"remainingDays"`
 	Expired       bool   `json:"expired"`
 	ServerTime    string `json:"serverTime,omitempty"`
+}
+
+type StartBridgeResult struct {
+	OK    bool   `json:"ok"`
+	Error string `json:"error,omitempty"`
 }
 
 // GetStats returns a JSON string for easy consumption from Android/iOS.
@@ -417,6 +430,34 @@ func SessionStatus(configJSON string) string {
 		Expired:       res.Expired,
 		ServerTime:    res.ServerTime,
 	})
+	return string(out)
+}
+
+func StartWithConfig(configJSON string) string {
+	mu.Lock()
+	if configJSON == "" {
+		out, _ := json.Marshal(StartBridgeResult{OK: false, Error: "empty config"})
+		mu.Unlock()
+		return string(out)
+	}
+	var cfg Config
+	if err := json.Unmarshal([]byte(configJSON), &cfg); err != nil {
+		setLastErrorLocked(err)
+		out, _ := json.Marshal(StartBridgeResult{OK: false, Error: err.Error()})
+		mu.Unlock()
+		return string(out)
+	}
+	cfg = normalizeConfig(cfg)
+	lastCfg = cfg
+	err := startLocked(cfg.TunFD, cfg.Proxy)
+	if err != nil {
+		setLastErrorLocked(err)
+		out, _ := json.Marshal(StartBridgeResult{OK: false, Error: err.Error()})
+		mu.Unlock()
+		return string(out)
+	}
+	out, _ := json.Marshal(StartBridgeResult{OK: true})
+	mu.Unlock()
 	return string(out)
 }
 

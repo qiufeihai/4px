@@ -43,6 +43,11 @@ apps/mobile/android/build/
 apps/mobile/android/app/build/
 apps/mobile/android/app/libs/
 
+# iOS
+apps/mobile/ios/.derivedData/
+apps/mobile/ios/FourPxIOS.xcodeproj/
+apps/mobile/ios/Frameworks/
+
 # Temp
 tmp/
 dist/

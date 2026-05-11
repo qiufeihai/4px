@@ -1,0 +1,69 @@
+name: FourPxIOS
+options:
+  minimumXcodeGenVersion: 2.38.0
+  xcodeVersion: "15.2"
+settings:
+  base:
+    PRODUCT_BUNDLE_IDENTIFIER: com.fourpx.ios
+    INFOPLIST_KEY_CFBundleDisplayName: 4px
+    INFOPLIST_KEY_LSRequiresIPhoneOS: YES
+    INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+    INFOPLIST_KEY_UIStatusBarStyle: UIStatusBarStyleDefault
+    INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: UIInterfaceOrientationPortrait
+    SWIFT_VERSION: 5.10
+    TARGETED_DEVICE_FAMILY: 1
+targets:
+  FourPxIOS:
+    type: application
+    platform: iOS
+    deploymentTarget: "15.0"
+    sources:
+      - path: FourPxIOSApp
+    info:
+      path: FourPxIOSApp/Info.plist
+      properties:
+        UILaunchScreen: {}
+        UIRequiresFullScreen: true
+    dependencies:
+      - target: PacketTunnelExtension
+      - framework: Frameworks/tun2socks.xcframework
+        embed: true
+    settings:
+      base:
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: ""
+        PRODUCT_NAME: 4px
+        CURRENT_PROJECT_VERSION: 1
+        MARKETING_VERSION: 0.1.0
+        GENERATE_INFOPLIST_FILE: NO
+        ENABLE_BITCODE: NO
+        CODE_SIGN_ENTITLEMENTS: FourPxIOSApp/FourPxIOS.entitlements
+  PacketTunnelExtension:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "15.0"
+    sources:
+      - path: PacketTunnelExtension
+    info:
+      path: PacketTunnelExtension/Info.plist
+    dependencies:
+      - framework: Frameworks/tun2socks.xcframework
+        embed: true
+    settings:
+      base:
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: ""
+        PRODUCT_BUNDLE_IDENTIFIER: com.fourpx.ios.PacketTunnel
+        CURRENT_PROJECT_VERSION: 1
+        MARKETING_VERSION: 0.1.0
+        GENERATE_INFOPLIST_FILE: NO
+        ENABLE_BITCODE: NO
+        CODE_SIGN_ENTITLEMENTS: PacketTunnelExtension/PacketTunnel.entitlements
+schemes:
+  FourPxIOS:
+    build:
+      targets:
+        FourPxIOS: all
+        PacketTunnelExtension: all
+    run:
+      config: Debug

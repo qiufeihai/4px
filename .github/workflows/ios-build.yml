@@ -1,0 +1,230 @@
+name: iOS TestFlight Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version label (e.g. v0.1.0)"
+        required: true
+        default: "v0.1.0"
+      upload_testflight:
+        description: "Upload IPA to TestFlight"
+        required: true
+        default: true
+        type: boolean
+
+jobs:
+  build-ios:
+    name: Build Signed IPA (macOS)
+    runs-on: macos-latest
+    env:
+      MOBILE_VERSION: "v0.0.0-20260508232728-bebd421c7fa8"
+      IOS_SDK_MIN: "15.0"
+      IOS_PROJECT: "apps/mobile/ios/FourPxIOS.xcodeproj"
+      IOS_SCHEME: "FourPxIOS"
+      IOS_ARCHIVE_PATH: "apps/mobile/ios/.build/FourPxIOS.xcarchive"
+      IOS_EXPORT_PATH: "apps/mobile/ios/.build/export"
+      IOS_EXPORT_OPTIONS: "apps/mobile/ios/.build/ExportOptions.plist"
+      IOS_APP_BUNDLE_ID: "com.fourpx.ios"
+      IOS_EXT_BUNDLE_ID: "com.fourpx.ios.PacketTunnel"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: apps/go/go.mod
+          cache: true
+          cache-dependency-path: apps/go/go.sum
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      - name: Cache gomobile
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/gomobile
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-gomobile-${{ env.MOBILE_VERSION }}-v1
+
+      - name: Install gomobile
+        shell: bash
+        working-directory: apps/go
+        run: |
+          set -euo pipefail
+          go get golang.org/x/mobile/bind@"$MOBILE_VERSION"
+          go install golang.org/x/mobile/cmd/gomobile@"$MOBILE_VERSION"
+          go install golang.org/x/mobile/cmd/gobind@"$MOBILE_VERSION"
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          gomobile init
+
+      - name: Build tun2socks xcframework
+        shell: bash
+        working-directory: apps/go
+        run: |
+          set -euo pipefail
+          mkdir -p ../mobile/ios/Frameworks
+          gomobile bind -target=ios,iossimulator -iosversion "$IOS_SDK_MIN" \
+            -o ../mobile/ios/Frameworks/tun2socks.xcframework ./pkg/tunbridge
+
+      - name: Generate Xcode project
+        shell: bash
+        working-directory: apps/mobile/ios
+        run: |
+          set -euo pipefail
+          xcodegen generate
+          sed -i '' 's/objectVersion = 77;/objectVersion = 60;/g' FourPxIOS.xcodeproj/project.pbxproj || true
+          sed -i '' 's/preferredProjectObjectVersion = 77;/preferredProjectObjectVersion = 60;/g' FourPxIOS.xcodeproj/project.pbxproj || true
+
+      - name: Check required signing secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in IOS_TEAM_ID IOS_CERT_P12_BASE64 IOS_CERT_PASSWORD IOS_PROVISION_APP_BASE64 IOS_PROVISION_EXTENSION_BASE64; do
+            if [ -z "${!name:-}" ]; then
+              echo "missing secret: $name"
+              exit 1
+            fi
+          done
+        env:
+          IOS_TEAM_ID: ${{ secrets.IOS_TEAM_ID }}
+          IOS_CERT_P12_BASE64: ${{ secrets.IOS_CERT_P12_BASE64 }}
+          IOS_CERT_PASSWORD: ${{ secrets.IOS_CERT_PASSWORD }}
+          IOS_PROVISION_APP_BASE64: ${{ secrets.IOS_PROVISION_APP_BASE64 }}
+          IOS_PROVISION_EXTENSION_BASE64: ${{ secrets.IOS_PROVISION_EXTENSION_BASE64 }}
+
+      - name: Install signing certificate
+        shell: bash
+        run: |
+          set -euo pipefail
+          KEYCHAIN_PATH="$RUNNER_TEMP/ios-build.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 18)"
+          echo "$IOS_CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$RUNNER_TEMP/cert.p12" -P "$IOS_CERT_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+          echo "KEYCHAIN_PASSWORD=$KEYCHAIN_PASSWORD" >> "$GITHUB_ENV"
+        env:
+          IOS_CERT_P12_BASE64: ${{ secrets.IOS_CERT_P12_BASE64 }}
+          IOS_CERT_PASSWORD: ${{ secrets.IOS_CERT_PASSWORD }}
+
+      - name: Install provisioning profiles
+        shell: bash
+        run: |
+          set -euo pipefail
+          PROFILE_DIR="$HOME/Library/MobileDevice/Provisioning Profiles"
+          mkdir -p "$PROFILE_DIR"
+          echo "$IOS_PROVISION_APP_BASE64" | base64 --decode > "$RUNNER_TEMP/app.mobileprovision"
+          echo "$IOS_PROVISION_EXTENSION_BASE64" | base64 --decode > "$RUNNER_TEMP/ext.mobileprovision"
+          APP_UUID="$(/usr/libexec/PlistBuddy -c 'Print UUID' /dev/stdin <<<"$(security cms -D -i "$RUNNER_TEMP/app.mobileprovision")")"
+          EXT_UUID="$(/usr/libexec/PlistBuddy -c 'Print UUID' /dev/stdin <<<"$(security cms -D -i "$RUNNER_TEMP/ext.mobileprovision")")"
+          cp "$RUNNER_TEMP/app.mobileprovision" "$PROFILE_DIR/$APP_UUID.mobileprovision"
+          cp "$RUNNER_TEMP/ext.mobileprovision" "$PROFILE_DIR/$EXT_UUID.mobileprovision"
+        env:
+          IOS_PROVISION_APP_BASE64: ${{ secrets.IOS_PROVISION_APP_BASE64 }}
+          IOS_PROVISION_EXTENSION_BASE64: ${{ secrets.IOS_PROVISION_EXTENSION_BASE64 }}
+
+      - name: Archive iOS app (Release, iPhoneOS)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p apps/mobile/ios/.build
+          xcodebuild \
+            -project "$IOS_PROJECT" \
+            -scheme "$IOS_SCHEME" \
+            -configuration Release \
+            -destination "generic/platform=iOS" \
+            -archivePath "$IOS_ARCHIVE_PATH" \
+            DEVELOPMENT_TEAM="$IOS_TEAM_ID" \
+            clean archive
+        env:
+          IOS_TEAM_ID: ${{ secrets.IOS_TEAM_ID }}
+
+      - name: Create export options
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$IOS_EXPORT_OPTIONS" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key><string>app-store</string>
+            <key>signingStyle</key><string>automatic</string>
+            <key>teamID</key><string>${IOS_TEAM_ID}</string>
+            <key>compileBitcode</key><false/>
+            <key>destination</key><string>export</string>
+            <key>stripSwiftSymbols</key><true/>
+            <key>manageAppVersionAndBuildNumber</key><false/>
+          </dict>
+          </plist>
+          PLIST
+        env:
+          IOS_TEAM_ID: ${{ secrets.IOS_TEAM_ID }}
+
+      - name: Export IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild -exportArchive \
+            -archivePath "$IOS_ARCHIVE_PATH" \
+            -exportPath "$IOS_EXPORT_PATH" \
+            -exportOptionsPlist "$IOS_EXPORT_OPTIONS"
+
+      - name: Prepare artifact metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ inputs.version }}"
+          GITSHA="$(git rev-parse --short HEAD)"
+          IPA_PATH="$(find "$IOS_EXPORT_PATH" -maxdepth 1 -name "*.ipa" | head -n 1)"
+          test -n "$IPA_PATH"
+          echo "IOS_IPA_PATH=$IPA_PATH" >> "$GITHUB_ENV"
+          echo "IOS_IPA_NAME=4px-ios_${VERSION}_ipa_${GITSHA}" >> "$GITHUB_ENV"
+          echo "IOS_BRIDGE_NAME=4px-ios-bridge_${VERSION}_${GITSHA}" >> "$GITHUB_ENV"
+
+      - name: Upload iOS IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.IOS_IPA_NAME }}
+          path: ${{ env.IOS_IPA_PATH }}
+          if-no-files-found: error
+
+      - name: Upload tunbridge xcframework
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.IOS_BRIDGE_NAME }}
+          path: apps/mobile/ios/Frameworks/tun2socks.xcframework
+          if-no-files-found: error
+
+      - name: Check TestFlight secrets
+        if: ${{ inputs.upload_testflight }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in ASC_API_KEY_ID ASC_API_ISSUER_ID ASC_API_PRIVATE_KEY; do
+            if [ -z "${!name:-}" ]; then
+              echo "missing secret: $name"
+              exit 1
+            fi
+          done
+        env:
+          ASC_API_KEY_ID: ${{ secrets.ASC_API_KEY_ID }}
+          ASC_API_ISSUER_ID: ${{ secrets.ASC_API_ISSUER_ID }}
+          ASC_API_PRIVATE_KEY: ${{ secrets.ASC_API_PRIVATE_KEY }}
+
+      - name: Upload to TestFlight
+        if: ${{ inputs.upload_testflight }}
+        uses: apple-actions/upload-testflight-build@v1
+        with:
+          app-path: ${{ env.IOS_IPA_PATH }}
+          issuer-id: ${{ secrets.ASC_API_ISSUER_ID }}
+          api-key-id: ${{ secrets.ASC_API_KEY_ID }}
+          api-private-key: ${{ secrets.ASC_API_PRIVATE_KEY }}
