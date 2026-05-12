@@ -22,6 +22,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Cache tun2socks AAR
+        id: cache-aar
+        uses: actions/cache@v4
+        with:
+          path: apps/go/tun2socks.aar
+          key: ${{ runner.os }}-tun2socks-aar-${{ env.MOBILE_VERSION }}-ndk${{ env.ANDROID_NDK_VERSION }}-${{ hashFiles('apps/go/go.mod', 'apps/go/go.sum', 'apps/go/pkg/**') }}
+
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
@@ -59,6 +66,7 @@ jobs:
           sdkmanager "platforms;android-${ANDROID_API_LEVEL}" "build-tools;${ANDROID_BUILD_TOOLS}" "ndk;${ANDROID_NDK_VERSION}"
 
       - name: Install gomobile
+        if: steps.cache-aar.outputs.cache-hit != 'true'
         shell: bash
         working-directory: apps/go
         run: |
@@ -70,6 +78,7 @@ jobs:
           gomobile init
 
       - name: Build tun2socks AAR
+        if: steps.cache-aar.outputs.cache-hit != 'true'
         shell: bash
         working-directory: apps/go
         env:
@@ -114,4 +123,3 @@ jobs:
           name: ${{ env.AAR_NAME }}
           path: apps/go/tun2socks.aar
           if-no-files-found: error
-
