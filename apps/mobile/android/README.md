@@ -71,7 +71,7 @@ cp tun2socks.aar ../mobile/android/app/libs/tun2socks.aar
 
 cd ../..
 gradle -p apps/mobile/android :app:assembleDebug --no-daemon --parallel --build-cache \
-  -Dkotlin.user.home=/Users/qiufeihai/github/4px/apps/mobile/android/.kotlin-user-home
+  -Dkotlin.user.home=apps/mobile/android/.kotlin-user-home
 ```
 
 ## MuMu 调试流程
@@ -119,7 +119,7 @@ bash apps/mobile/android/scripts/gen_release_signing_secrets.sh
 本地构建 signed release（可选）：
 
 ```bash
-export ANDROID_KEYSTORE_PATH="/Users/qiufeihai/github/4px/apps/mobile/android/.keystore/fourpx-release.jks"
+export ANDROID_KEYSTORE_PATH="apps/mobile/android/.keystore/fourpx-release.jks"
 export ANDROID_KEYSTORE_PASSWORD="..."
 export ANDROID_KEY_ALIAS="fourpx"
 export ANDROID_KEY_PASSWORD="..."

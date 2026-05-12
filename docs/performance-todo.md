@@ -139,7 +139,7 @@ C组资源结果（CPU/内存区间）：
 一键脚本：
 
 ```bash
-cd /Users/qiufeihai/github/4px/apps/go
+cd "$(git rev-parse --show-toplevel)/apps/go"
 ./single_user_validate.sh
 ```
 

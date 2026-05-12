@@ -5,7 +5,8 @@ import subprocess
 from PIL import Image, ImageDraw, ImageFont
 
 
-ROOT = Path("/Users/qiufeihai/github/4px/apps/go/gui")
+_env_root = os.environ.get("FOURPX_GUI_ROOT")
+ROOT = Path(_env_root).expanduser().resolve() if _env_root else Path(__file__).resolve().parents[1]
 BUILD_DIR = ROOT / "build"
 APPICON_PNG = BUILD_DIR / "appicon.png"
 ICONSET_DIR = BUILD_DIR / "appicon.iconset"
