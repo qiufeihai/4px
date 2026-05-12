@@ -42,7 +42,7 @@ jobs:
         run: npm ci --no-audit --fund=false
 
       - name: Install Wails CLI
-        run: go install github.com/wailsapp/wails/v2/cmd/wails@"$WAILS_VERSION"
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@${{ env.WAILS_VERSION }}
 
       - name: Build GUI (macOS)
         if: runner.os == 'macOS'
