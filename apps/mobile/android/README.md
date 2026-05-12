@@ -96,3 +96,42 @@ adb -s 127.0.0.1:7555 logcat | grep -i -E "FourPxVpnService|tunbridge|clientcore
 - 点击“连接”后，先完成协议探测，再拉起 VPN。
 - 点击“断开”后，会调用离线接口并停止 VPN。
 - 若出现证书主机名校验失败，请使用证书匹配的域名，不要直接填 IP。
+
+## Release 签名（可安装生产包）
+
+`workflow` 产物或本地 `assembleRelease` 若未签名，会出现 `INSTALL_PARSE_FAILED_NO_CERTIFICATES`，设备/模拟器无法安装。
+
+一键生成 release keystore 并输出 GitHub Secrets（在仓库根目录执行）：
+
+```bash
+bash apps/mobile/android/scripts/gen_release_signing_secrets.sh
+```
+
+将脚本输出的 4 个值复制到 GitHub：
+
+- `ANDROID_KEYSTORE_BASE64`
+- `ANDROID_KEYSTORE_PASSWORD`
+- `ANDROID_KEY_ALIAS`
+- `ANDROID_KEY_PASSWORD`
+
+配置完成后，`Android Release Build` workflow 会自动生成并上传可安装的 signed `app-release.apk`。
+
+本地构建 signed release（可选）：
+
+```bash
+export ANDROID_KEYSTORE_PATH="/Users/qiufeihai/github/4px/apps/mobile/android/.keystore/fourpx-release.jks"
+export ANDROID_KEYSTORE_PASSWORD="..."
+export ANDROID_KEY_ALIAS="fourpx"
+export ANDROID_KEY_PASSWORD="..."
+
+gradle -p apps/mobile/android :app:assembleRelease --no-daemon --parallel --build-cache
+```
+
+默认产物路径：
+
+- `apps/mobile/android/app/build/outputs/apk/release/app-release.apk`
+
+## Workflows
+
+- `Android Debug Build`：产出 `app-debug.apk`（适合 MuMu 日常调试，不依赖签名 Secrets）。
+- `Android Release Build`：产出 signed `app-release.apk`（适合正式分发与可覆盖升级）。

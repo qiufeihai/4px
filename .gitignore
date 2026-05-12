@@ -38,10 +38,12 @@ apps/node/benchmarks/
 apps/mobile/android/.gradle/
 apps/mobile/android/.gradle-user-home/
 apps/mobile/android/.kotlin-user-home/
+apps/mobile/android/.keystore/
 apps/mobile/android/local.properties
 apps/mobile/android/build/
 apps/mobile/android/app/build/
 apps/mobile/android/app/libs/
+apps/mobile/android/app/*.jks
 
 # iOS
 apps/mobile/ios/.derivedData/

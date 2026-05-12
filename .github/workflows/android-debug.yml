@@ -1,26 +1,22 @@
-name: Android Release Build
+name: Android Debug Build
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release version label (e.g. v0.8.0)"
+        description: "Build label (e.g. v0.8.0)"
         required: true
         default: "v0.8.0"
 
 jobs:
   build-android:
-    name: Build Android Release (ubuntu)
+    name: Build Android Debug (ubuntu)
     runs-on: ubuntu-latest
     env:
       MOBILE_VERSION: "v0.0.0-20260508232728-bebd421c7fa8"
       ANDROID_API_LEVEL: "34"
       ANDROID_BUILD_TOOLS: "34.0.0"
       ANDROID_NDK_VERSION: "27.0.12077973"
-      ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-      ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-      ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-      ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
 
     steps:
       - name: Checkout
@@ -90,30 +86,11 @@ jobs:
           mkdir -p apps/mobile/android/app/libs
           cp apps/go/tun2socks.aar apps/mobile/android/app/libs/tun2socks.aar
 
-      - name: Prepare Release signing keystore
+      - name: Assemble Debug APK
         shell: bash
         run: |
           set -euo pipefail
-          [[ -n "${ANDROID_KEYSTORE_BASE64:-}" ]] || (echo "missing secret: ANDROID_KEYSTORE_BASE64" >&2 && exit 1)
-          [[ -n "${ANDROID_KEYSTORE_PASSWORD:-}" ]] || (echo "missing secret: ANDROID_KEYSTORE_PASSWORD" >&2 && exit 1)
-          [[ -n "${ANDROID_KEY_ALIAS:-}" ]] || (echo "missing secret: ANDROID_KEY_ALIAS" >&2 && exit 1)
-          [[ -n "${ANDROID_KEY_PASSWORD:-}" ]] || (echo "missing secret: ANDROID_KEY_PASSWORD" >&2 && exit 1)
-          KEYSTORE_PATH="$GITHUB_WORKSPACE/apps/mobile/android/app/release.jks"
-          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$KEYSTORE_PATH"
-          echo "ANDROID_KEYSTORE_PATH=$KEYSTORE_PATH" >> "$GITHUB_ENV"
-
-      - name: Assemble Release APK
-        shell: bash
-        run: |
-          set -euo pipefail
-          gradle -p apps/mobile/android :app:assembleRelease --no-daemon --parallel --build-cache
-
-      - name: Verify signed APK
-        shell: bash
-        run: |
-          set -euo pipefail
-          "${ANDROID_SDK_ROOT}/build-tools/${ANDROID_BUILD_TOOLS}/apksigner" verify -v \
-            apps/mobile/android/app/build/outputs/apk/release/app-release.apk
+          gradle -p apps/mobile/android :app:assembleDebug --no-daemon --parallel --build-cache
 
       - name: Prepare artifact metadata
         shell: bash
@@ -121,14 +98,14 @@ jobs:
           set -euo pipefail
           VERSION="${{ inputs.version }}"
           GITSHA="$(git rev-parse --short HEAD)"
-          echo "APK_NAME=4px-android_${VERSION}_release_${GITSHA}" >> "$GITHUB_ENV"
-          echo "AAR_NAME=4px-tun2socks_${VERSION}_release_${GITSHA}" >> "$GITHUB_ENV"
+          echo "APK_NAME=4px-android_${VERSION}_debug_${GITSHA}" >> "$GITHUB_ENV"
+          echo "AAR_NAME=4px-tun2socks_${VERSION}_debug_${GITSHA}" >> "$GITHUB_ENV"
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.APK_NAME }}
-          path: apps/mobile/android/app/build/outputs/apk/release/app-release.apk
+          path: apps/mobile/android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
 
       - name: Upload AAR artifact
@@ -137,3 +114,4 @@ jobs:
           name: ${{ env.AAR_NAME }}
           path: apps/go/tun2socks.aar
           if-no-files-found: error
+
