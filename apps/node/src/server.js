@@ -81,6 +81,7 @@ const camouflageRateLimitMaxRequests = Math.max(1, Math.floor(Number(camouflageR
 const adminCfg = cfg.admin && typeof cfg.admin === 'object' ? cfg.admin : {};
 const metricsReporterCfg = cfg.metricsReporter && typeof cfg.metricsReporter === 'object' ? cfg.metricsReporter : {};
 const metricsReporterEnabled = metricsReporterCfg.enabled === true;
+const runningInClusterWorker = Boolean(process.env.NODE_UNIQUE_ID);
 const usersFilePath = cfg.authUsersFile ? resolvePath(cfg.__configDir, cfg.authUsersFile) : '';
 const staticAuthTokens = Array.isArray(cfg.authTokens)
   ? cfg.authTokens.map((v) => String(v || '').trim()).filter((v) => v)
@@ -455,6 +456,14 @@ function isCamouflageRateLimited(remoteIp) {
 
 function sendMetricsReporterMessage(type, payload) {
   if (!metricsReporterEnabled) return false;
+  if (runningInClusterWorker && typeof process.send === 'function') {
+    try {
+      process.send({ type: 'metrics_report', kind: type, payload });
+      return true;
+    } catch (err) {
+      return false;
+    }
+  }
   if (!metricsReporterChild || !metricsReporterChild.connected || typeof metricsReporterChild.send !== 'function') {
     return false;
   }
@@ -1303,15 +1312,17 @@ async function bootstrap() {
   server.listen(cfg.listenPort, cfg.listenHost, listenBacklog, () => {
     logger.info(`H2 server listening on ${cfg.listenHost}:${cfg.listenPort}`);
     if (metricsReporterEnabled) {
-      const cfgArgv = cfg.__configPath ? ['-c', cfg.__configPath] : [];
-      metricsReporterChild = fork(path.resolve(__dirname, 'metrics_reporter.js'), cfgArgv, {
-        stdio: 'inherit',
-        env: process.env
-      });
-      metricsReporterChild.on('exit', () => {
-        logger.warn('metrics reporter exited');
-        metricsReporterChild = null;
-      });
+      if (!runningInClusterWorker) {
+        const cfgArgv = cfg.__configPath ? ['-c', cfg.__configPath] : [];
+        metricsReporterChild = fork(path.resolve(__dirname, 'metrics_reporter.js'), cfgArgv, {
+          stdio: 'inherit',
+          env: process.env
+        });
+        metricsReporterChild.on('exit', () => {
+          logger.warn('metrics reporter exited');
+          metricsReporterChild = null;
+        });
+      }
     }
     if (adminCfg.enabled === true) {
       if (!process.env.NODE_UNIQUE_ID) {
