@@ -3,6 +3,10 @@ name: Android Release Build
 on:
   workflow_dispatch:
     inputs:
+      environment:
+        description: "GitHub Environment name that stores signing secrets"
+        required: true
+        default: "production"
       version:
         description: "Release version label (e.g. v0.8.0)"
         required: true
@@ -12,6 +16,7 @@ jobs:
   build-android:
     name: Build Android Release (ubuntu)
     runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
     env:
       MOBILE_VERSION: "v0.0.0-20260508232728-bebd421c7fa8"
       ANDROID_API_LEVEL: "34"
