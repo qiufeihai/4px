@@ -6,6 +6,7 @@ Go 版本客户端用于连接 Node `server`，并提供跨平台系统代理开
 - 上游协议：`TLS + HTTP/2`
 - 请求路径：`POST /proxy`
 - 关键请求头：`x-auth-token`、`x-target-host`、`x-target-port`
+- 会话接口：`/session/ping`、`/session/status`、`/session/offline`
 
 ## 核心特性
 
@@ -90,6 +91,14 @@ go run ./cmd/4px -c config/client.json sysproxy-status
 - `upstream_connect_timeout_ms`：连接上游超时
 - `response_header_timeout_ms`：响应头超时
 - `idle_timeout_ms`：空闲超时
+- `upstream_max_idle_conns`：全局空闲连接池上限
+- `upstream_max_idle_conns_per_host`：单 host 空闲连接池上限
+- `upstream_max_conns_per_host`：单 host 总连接上限（0 表示不限制）
+- `upstream_disable_compression`：禁用上游压缩（默认 `true`）
+- `upstream_h2_read_idle_timeout_ms`：HTTP/2 读空闲探活间隔
+- `upstream_h2_ping_timeout_ms`：HTTP/2 ping 超时
+- `session_heartbeat_interval_ms`：会话心跳间隔（毫秒，默认 30000，最小 5000）
+- `device_ticket`：设备票据缓存（自动维护，通常无需手填）
 - `log_level`：日志等级（`DEBUG/INFO/WARN/ERROR`）
 
 ## 模式说明

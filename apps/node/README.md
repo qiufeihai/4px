@@ -155,14 +155,20 @@ node bin/4px.js client -c config/client.json
 
 - `socksListenHost` / `socksListenPort`：本地 SOCKS5 监听
 - `httpListen` / `httpListenBacklog`：本地 HTTP 代理监听
-- `upstream.host` / `upstream.port` / `upstream.path`：远端 server 地址与路径（固定 `/proxy`）
+- `upstream.host` / `upstream.port`：远端 server 地址
+- `upstream.path`：历史兼容字段；当前运行时固定走 `/proxy`
 - `upstream.serverName` / `upstream.authToken` / `upstream.rejectUnauthorized` / `upstream.caFile`：TLS 与鉴权参数
 - `upstream.deviceTicket`：设备票据（可留空；client 会在收到服务端返回后自动更新内存态）
+- `sessionHeartbeatIntervalMs`：会话心跳周期（毫秒，默认 `30000`，最小 `5000`）
 - `localAuth.enabled` / `localAuth.username` / `localAuth.password`：本地 SOCKS5 认证
 - `logLevel` / `metricsIntervalMs`：日志与指标输出
 - `h2SessionPoolSize`：上游 H2 会话池大小
 - `upstreamConnectTimeoutMs` / `streamResponseTimeoutMs` / `streamIdleTimeoutMs` / `localSocketIdleTimeoutMs`：超时参数
 - `maxBufferedBytes` / `socksListenBacklog` / `localSocketKeepAliveInitialDelayMs`：连接与缓冲参数
+
+会话行为说明：
+- 运行中定期调用 `/session/ping` 维持在线与续租。
+- 客户端停止时调用 `/session/offline` 显式释放；失败场景由 TTL 兜底回收。
 
 ## 日志与调试
 

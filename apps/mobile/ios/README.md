@@ -1,6 +1,6 @@
 # 4px iOS 客户端（MVP）
 
-本文档用于 Trae 本地开发 iOS 第一版（控制面 + 数据面骨架）。
+本文档用于 Trae 本地开发 iOS 客户端（控制面 + PacketTunnel 数据面）。
 
 ## 当前实现范围
 
@@ -9,12 +9,12 @@
   - `ConnectProbe`
   - `Offline`
   - `SessionStatus`
-- 已加入 `PacketTunnel` Extension 数据面骨架（`NetworkExtension`）。
+- 已接入 `PacketTunnel` Extension 数据面（`NetworkExtension`）。
 - 连接失败提供中文提示（过期、授权失败、设备上限、证书错误、超时等）。
 - 支持有效期查询（手动刷新）。
 - 支持日志查询（最近 200 条，支持清空）。
 
-说明：当前为数据面第二阶段（进行中），已在 `PacketTunnelProvider` 内启用默认路由并调用 Go bridge `StartWithConfig` 启动 `tunbridge/tun2socks`；仍需真机联调验证完整转发稳定性。
+说明：当前为数据面第二阶段，`PacketTunnelProvider` 已启用默认路由并通过 Go bridge `StartWithConfig` 启动 `tunbridge/tun2socks`；后续重点是持续真机稳定性验证。
 
 ## 目录结构
 
@@ -92,9 +92,9 @@ xcodebuild -project FourPxIOS.xcodeproj -scheme FourPxIOS -configuration Debug -
 - `IOS_CERT_PASSWORD`：该 `.p12` 证书密码。
 - `IOS_PROVISION_APP_BASE64`：主 App 的 App Store provisioning profile（base64）。
 - `IOS_PROVISION_EXTENSION_BASE64`：`PacketTunnelExtension` 的 App Store provisioning profile（base64）。
-- `ASC_API_KEY_ID`：App Store Connect API Key ID（上传 TestFlight 用）。
-- `ASC_API_ISSUER_ID`：App Store Connect API Issuer ID。
-- `ASC_API_PRIVATE_KEY`：App Store Connect API 私钥内容（`.p8` 原文）。
+- `ASC_API_KEY_ID`：App Store Connect API Key ID（仅 `upload_testflight=true` 需要）。
+- `ASC_API_ISSUER_ID`：App Store Connect API Issuer ID（仅 `upload_testflight=true` 需要）。
+- `ASC_API_PRIVATE_KEY`：App Store Connect API 私钥内容（`.p8` 原文，仅 `upload_testflight=true` 需要）。
 
 ## 使用说明
 

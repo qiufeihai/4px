@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand"
 	"net"
 	"net/http"
 	"os"
@@ -30,26 +31,27 @@ import (
 )
 
 type Config struct {
-	SocksListen              string `json:"socks_listen"`
-	HTTPListen               string `json:"http_listen"`
-	UpstreamHost             string `json:"upstream_host"`
-	UpstreamPort             int    `json:"upstream_port"`
-	UpstreamPath             string `json:"upstream_path"`
-	ServerName               string `json:"server_name"`
-	AuthToken                string `json:"auth_token"`
-	RejectUnauthorized       bool   `json:"reject_unauthorized"`
-	CAFile                   string `json:"ca_file"`
-	UpstreamConnectTimeoutMS int    `json:"upstream_connect_timeout_ms"`
-	ResponseHeaderTimeoutMS  int    `json:"response_header_timeout_ms"`
-	IdleTimeoutMS            int    `json:"idle_timeout_ms"`
-	LogLevel                 string `json:"log_level"`
-	UpstreamMaxIdleConns     int    `json:"upstream_max_idle_conns"`
-	UpstreamMaxIdlePerHost   int    `json:"upstream_max_idle_conns_per_host"`
-	UpstreamMaxConnsPerHost  int    `json:"upstream_max_conns_per_host"`
-	UpstreamDisableCompress  bool   `json:"upstream_disable_compression"`
-	UpstreamH2ReadIdleMS     int    `json:"upstream_h2_read_idle_timeout_ms"`
-	UpstreamH2PingTimeoutMS  int    `json:"upstream_h2_ping_timeout_ms"`
-	DeviceTicket             string `json:"device_ticket"`
+	SocksListen                string `json:"socks_listen"`
+	HTTPListen                 string `json:"http_listen"`
+	UpstreamHost               string `json:"upstream_host"`
+	UpstreamPort               int    `json:"upstream_port"`
+	UpstreamPath               string `json:"upstream_path"`
+	ServerName                 string `json:"server_name"`
+	AuthToken                  string `json:"auth_token"`
+	RejectUnauthorized         bool   `json:"reject_unauthorized"`
+	CAFile                     string `json:"ca_file"`
+	UpstreamConnectTimeoutMS   int    `json:"upstream_connect_timeout_ms"`
+	ResponseHeaderTimeoutMS    int    `json:"response_header_timeout_ms"`
+	IdleTimeoutMS              int    `json:"idle_timeout_ms"`
+	LogLevel                   string `json:"log_level"`
+	UpstreamMaxIdleConns       int    `json:"upstream_max_idle_conns"`
+	UpstreamMaxIdlePerHost     int    `json:"upstream_max_idle_conns_per_host"`
+	UpstreamMaxConnsPerHost    int    `json:"upstream_max_conns_per_host"`
+	UpstreamDisableCompress    bool   `json:"upstream_disable_compression"`
+	UpstreamH2ReadIdleMS       int    `json:"upstream_h2_read_idle_timeout_ms"`
+	UpstreamH2PingTimeoutMS    int    `json:"upstream_h2_ping_timeout_ms"`
+	SessionHeartbeatIntervalMS int    `json:"session_heartbeat_interval_ms"`
+	DeviceTicket               string `json:"device_ticket"`
 }
 
 type proxyRuntime struct {
@@ -102,6 +104,8 @@ var (
 )
 
 const upstreamEstablishWarnThresholdMS = 1500
+const sessionHeartbeatInterval = 30 * time.Second
+const minSessionHeartbeatInterval = 5 * time.Second
 
 const defaultClientConfigTemplate = `{
   "socks_listen": "127.0.0.1:7777",
@@ -122,6 +126,7 @@ const defaultClientConfigTemplate = `{
   "upstream_disable_compression": true,
   "upstream_h2_read_idle_timeout_ms": 30000,
   "upstream_h2_ping_timeout_ms": 10000,
+  "session_heartbeat_interval_ms": 30000,
   "device_ticket": "",
   "log_level": "INFO"
 }
@@ -455,6 +460,7 @@ func RunProxyWithContext(ctx context.Context, cfg *Config) error {
 	if httpLn != nil {
 		go acceptHTTPProxyWithContext(ctx, httpLn, rt, errCh, tracker)
 	}
+	go rt.runHeartbeatLoop(ctx)
 	go func() {
 		<-ctx.Done()
 		_ = socksLn.Close()
@@ -475,6 +481,113 @@ func RunProxyWithContext(ctx context.Context, cfg *Config) error {
 			return e
 		}
 	}
+}
+
+func (rt *proxyRuntime) runHeartbeatLoop(ctx context.Context) {
+	failures := 0
+	_ = rt.sendHeartbeat(ctx)
+	wait := rt.nextHeartbeatWait(failures)
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+			if rt.sendHeartbeat(ctx) {
+				failures = 0
+			} else if failures < 6 {
+				failures++
+			}
+			timer.Reset(rt.nextHeartbeatWait(failures))
+		}
+	}
+}
+
+func (rt *proxyRuntime) heartbeatBaseInterval() time.Duration {
+	if rt == nil || rt.cfg == nil {
+		return sessionHeartbeatInterval
+	}
+	if rt.cfg.SessionHeartbeatIntervalMS <= 0 {
+		return sessionHeartbeatInterval
+	}
+	interval := time.Duration(rt.cfg.SessionHeartbeatIntervalMS) * time.Millisecond
+	if interval < minSessionHeartbeatInterval {
+		return minSessionHeartbeatInterval
+	}
+	return interval
+}
+
+func (rt *proxyRuntime) nextHeartbeatWait(failures int) time.Duration {
+	base := rt.heartbeatBaseInterval()
+	backoff := base
+	if failures > 0 {
+		shift := failures
+		if shift > 4 {
+			shift = 4
+		}
+		backoff = base << shift
+		if backoff > 2*time.Minute {
+			backoff = 2 * time.Minute
+		}
+	}
+	jitterMax := backoff / 5
+	if jitterMax < 500*time.Millisecond {
+		jitterMax = 500 * time.Millisecond
+	}
+	delta := time.Duration(rand.Int63n(int64(jitterMax*2)+1)) - jitterMax
+	next := backoff + delta
+	if next < minSessionHeartbeatInterval {
+		return minSessionHeartbeatInterval
+	}
+	return next
+}
+
+func (rt *proxyRuntime) sendHeartbeat(parent context.Context) bool {
+	pingURL := fmt.Sprintf("https://%s:%d/session/ping", rt.cfg.UpstreamHost, rt.cfg.UpstreamPort)
+	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, pingURL, http.NoBody)
+	if err != nil {
+		logf("WARN", "build heartbeat request failed err=%v", err)
+		return false
+	}
+	req.Header.Set("x-auth-token", rt.authToken)
+	if ticket := rt.getDeviceTicket(); ticket != "" {
+		req.Header.Set("x-device-ticket", ticket)
+	}
+
+	resp, err := rt.client.Do(req)
+	if err != nil {
+		if errors.Is(ctx.Err(), context.Canceled) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return false
+		}
+		logf("WARN", "heartbeat failed err=%v", err)
+		return false
+	}
+	defer resp.Body.Close()
+	if nextTicket := strings.TrimSpace(resp.Header.Get("x-device-ticket")); nextTicket != "" {
+		if rt.updateDeviceTicket(nextTicket) {
+			logf("INFO", "device ticket updated from heartbeat response")
+		}
+	}
+	if resp.StatusCode != http.StatusOK {
+		authReason := strings.TrimSpace(resp.Header.Get("x-auth-reason"))
+		if resp.StatusCode == http.StatusUnauthorized && authReason == "invalid_device_ticket" {
+			if rt.clearDeviceTicket() {
+				logf("INFO", "device ticket cleared due to invalid heartbeat ticket")
+			}
+			return false
+		}
+		if authReason != "" {
+			logf("WARN", "heartbeat rejected status=%d auth_reason=%s", resp.StatusCode, authReason)
+			return false
+		}
+		logf("WARN", "heartbeat rejected status=%d", resp.StatusCode)
+		return false
+	}
+	return true
 }
 
 func (rt *proxyRuntime) sendOfflineSignal() {
@@ -716,6 +829,12 @@ func loadConfig(path string) (*Config, error) {
 	}
 	if cfg.UpstreamH2PingTimeoutMS <= 0 {
 		cfg.UpstreamH2PingTimeoutMS = 10000
+	}
+	if cfg.SessionHeartbeatIntervalMS <= 0 {
+		cfg.SessionHeartbeatIntervalMS = int((30 * time.Second) / time.Millisecond)
+	}
+	if time.Duration(cfg.SessionHeartbeatIntervalMS)*time.Millisecond < minSessionHeartbeatInterval {
+		cfg.SessionHeartbeatIntervalMS = int(minSessionHeartbeatInterval / time.Millisecond)
 	}
 	return &cfg, nil
 }
@@ -1002,6 +1121,16 @@ func (rt *proxyRuntime) updateDeviceTicket(next string) bool {
 	return true
 }
 
+func (rt *proxyRuntime) clearDeviceTicket() bool {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	if strings.TrimSpace(rt.deviceTicket) == "" {
+		return false
+	}
+	rt.deviceTicket = ""
+	return true
+}
+
 func openUpstreamTunnel(ctx context.Context, rt *proxyRuntime, target string) (io.ReadCloser, writeCloserWithErr, error) {
 	host, portStr, splitErr := net.SplitHostPort(target)
 	if splitErr != nil {
@@ -1009,49 +1138,60 @@ func openUpstreamTunnel(ctx context.Context, rt *proxyRuntime, target string) (i
 	}
 	startAt := time.Now()
 	traceID := nextTraceID()
-	pr, pw := io.Pipe()
+	originalTicket := strings.TrimSpace(rt.getDeviceTicket())
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, rt.upstreamURL, pr)
-	if err != nil {
-		_ = pw.Close()
-		return nil, nil, err
-	}
-	req.Header.Set("x-auth-token", rt.authToken)
-	if ticket := rt.getDeviceTicket(); ticket != "" {
-		req.Header.Set("x-device-ticket", ticket)
-	}
-	req.Header.Set("x-target-host", host)
-	req.Header.Set("x-target-port", portStr)
-	req.Header.Set("x-trace-id", traceID)
+	for attempt := 0; attempt < 2; attempt++ {
+		pr, pw := io.Pipe()
 
-	resp, err := rt.client.Do(req)
-	if err != nil {
-		_ = pw.CloseWithError(err)
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, rt.upstreamURL, pr)
+		if err != nil {
+			_ = pw.Close()
+			return nil, nil, err
+		}
+		req.Header.Set("x-auth-token", rt.authToken)
+		if attempt == 0 && originalTicket != "" {
+			req.Header.Set("x-device-ticket", originalTicket)
+		}
+		req.Header.Set("x-target-host", host)
+		req.Header.Set("x-target-port", portStr)
+		req.Header.Set("x-trace-id", traceID)
+
+		resp, err := rt.client.Do(req)
+		if err != nil {
+			_ = pw.CloseWithError(err)
+			elapsedMS := time.Since(startAt).Milliseconds()
+			logf("WARN", "upstream establish failed trace_id=%s target=%s elapsed_ms=%d err=%v", traceID, target, elapsedMS, err)
+			return nil, nil, err
+		}
 		elapsedMS := time.Since(startAt).Milliseconds()
-		logf("WARN", "upstream establish failed trace_id=%s target=%s elapsed_ms=%d err=%v", traceID, target, elapsedMS, err)
-		return nil, nil, err
-	}
-	elapsedMS := time.Since(startAt).Milliseconds()
-	if elapsedMS >= upstreamEstablishWarnThresholdMS {
-		logf("WARN", "slow upstream establish trace_id=%s target=%s elapsed_ms=%d threshold_ms=%d", traceID, target, elapsedMS, upstreamEstablishWarnThresholdMS)
-	}
-	if resp.StatusCode != http.StatusOK {
-		_ = pw.CloseWithError(fmt.Errorf("status=%d", resp.StatusCode))
-		defer resp.Body.Close()
-		authReason := strings.TrimSpace(resp.Header.Get("x-auth-reason"))
-		if authReason != "" {
-			logf("WARN", "upstream rejected trace_id=%s target=%s status=%d auth_reason=%s elapsed_ms=%d", traceID, target, resp.StatusCode, authReason, elapsedMS)
-			return nil, nil, fmt.Errorf("upstream status=%d auth_reason=%s", resp.StatusCode, authReason)
+		if elapsedMS >= upstreamEstablishWarnThresholdMS {
+			logf("WARN", "slow upstream establish trace_id=%s target=%s elapsed_ms=%d threshold_ms=%d", traceID, target, elapsedMS, upstreamEstablishWarnThresholdMS)
 		}
-		logf("WARN", "upstream rejected trace_id=%s target=%s status=%d elapsed_ms=%d", traceID, target, resp.StatusCode, elapsedMS)
-		return nil, nil, fmt.Errorf("upstream status=%d", resp.StatusCode)
-	}
-	if nextTicket := strings.TrimSpace(resp.Header.Get("x-device-ticket")); nextTicket != "" {
-		if rt.updateDeviceTicket(nextTicket) {
-			logf("INFO", "device ticket updated from upstream response")
+		if resp.StatusCode != http.StatusOK {
+			_ = pw.CloseWithError(fmt.Errorf("status=%d", resp.StatusCode))
+			authReason := strings.TrimSpace(resp.Header.Get("x-auth-reason"))
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusUnauthorized && attempt == 0 && originalTicket != "" && authReason == "invalid_device_ticket" {
+				if rt.clearDeviceTicket() {
+					logf("INFO", "device ticket cleared due to invalid ticket, retrying without ticket")
+				}
+				continue
+			}
+			if authReason != "" {
+				logf("WARN", "upstream rejected trace_id=%s target=%s status=%d auth_reason=%s elapsed_ms=%d", traceID, target, resp.StatusCode, authReason, elapsedMS)
+				return nil, nil, fmt.Errorf("upstream status=%d auth_reason=%s", resp.StatusCode, authReason)
+			}
+			logf("WARN", "upstream rejected trace_id=%s target=%s status=%d elapsed_ms=%d", traceID, target, resp.StatusCode, elapsedMS)
+			return nil, nil, fmt.Errorf("upstream status=%d", resp.StatusCode)
 		}
+		if nextTicket := strings.TrimSpace(resp.Header.Get("x-device-ticket")); nextTicket != "" {
+			if rt.updateDeviceTicket(nextTicket) {
+				logf("INFO", "device ticket updated from upstream response")
+			}
+		}
+		return resp.Body, pw, nil
 	}
-	return resp.Body, pw, nil
+	return nil, nil, fmt.Errorf("upstream rejected: invalid device ticket")
 }
 
 func nextTraceID() string {

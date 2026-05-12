@@ -704,6 +704,18 @@ function resolveDeviceIdentity(authUser, headers, remoteIp, options = {}) {
         nextTicket: ''
       };
     }
+    if (deviceTicketRequire && allowBootstrap) {
+      const bindValue = peerBindingValue(remoteIp);
+      const seed = `${userId}|${bindValue || 'no-bind'}`;
+      const deviceId = `bootstrap-${hashText(seed, 24)}`;
+      const nextTicket = issueDeviceTicket(userId, deviceId, remoteIp);
+      return {
+        ok: true,
+        source: 'bootstrap',
+        deviceId,
+        nextTicket
+      };
+    }
     return { ok: false, reason: `invalid_ticket_${verified.reason}` };
   }
 
@@ -753,22 +765,25 @@ function buildSessionStatus(authUser) {
   };
 }
 
-async function touchDeviceLease(authUser, deviceKey) {
+async function touchDeviceLease(authUser, deviceKey, options = {}) {
   const uid = String(authUser && authUser.id ? authUser.id : '').trim();
   if (!uid || !deviceKey) return { ok: true, activeDevices: 0, maxDevices: calcMaxDevices(authUser) };
   const maxDevices = calcMaxDevices(authUser);
   if (!deviceLeaseStore) {
     return { ok: false, activeDevices: 0, maxDevices };
   }
+  const forceStoreTouch = options.forceStoreTouch === true;
+  const allowCacheBypass = options.allowCacheBypass === true;
   const now = Date.now();
   const cacheKey = `${uid}|${deviceKey}`;
   const lastTouchAt = Number(recentDeviceLeaseTouchAt.get(cacheKey) || 0);
-  if (
-    deviceLeaseStoreResolvedMode === 'redis' &&
+  const canBypassWrite =
+    !forceStoreTouch &&
     deviceLeaseTouchMinIntervalMs > 0 &&
     lastTouchAt > 0 &&
-    now - lastTouchAt < deviceLeaseTouchMinIntervalMs
-  ) {
+    now - lastTouchAt < deviceLeaseTouchMinIntervalMs &&
+    (deviceLeaseStoreResolvedMode === 'redis' || allowCacheBypass);
+  if (canBypassWrite) {
     return { ok: true, activeDevices: 0, maxDevices };
   }
   const result = await deviceLeaseStore.acquireLease({
@@ -923,7 +938,8 @@ server.on('stream', async (stream, headers) => {
     const isProxyV1 = reqMethod === 'POST' && reqPath === '/proxy';
     const isSessionOffline = reqMethod === 'POST' && reqPath === '/session/offline';
     const isSessionStatus = reqMethod === 'GET' && reqPath === '/session/status';
-    if (!isProxyV1 && !isSessionOffline && !isSessionStatus) {
+    const isSessionPing = reqMethod === 'POST' && reqPath === '/session/ping';
+    if (!isProxyV1 && !isSessionOffline && !isSessionStatus && !isSessionPing) {
       stats.routeRejectedTotal += 1;
       markServerError('non-retryable');
       logger.warn(`reject invalid route, trace_id=${traceId}, peer=${remotePeer}, stream=${streamId}, method=${reqMethod}, path=${reqPath}, err_class=non-retryable`);
@@ -983,7 +999,12 @@ server.on('stream', async (stream, headers) => {
       stream.end(JSON.stringify({ ok: true }));
       return;
     }
-    const leaseResult = await touchDeviceLease(authUser, deviceLeaseKey);
+    const leaseResult = await touchDeviceLease(authUser, deviceLeaseKey, {
+      // Keep /proxy as final gate, but avoid frequent lease writes on the hot path.
+      allowCacheBypass: isProxyV1,
+      // session/ping should be the primary lease refresh path.
+      forceStoreTouch: isSessionPing
+    });
     if (!leaseResult.ok) {
       stats.authRejectedTotal += 1;
       markServerError('non-retryable');
@@ -998,6 +1019,18 @@ server.on('stream', async (stream, headers) => {
         error: 'device_limit_exceeded',
         activeDevices: leaseResult.activeDevices,
         maxDevices: leaseResult.maxDevices
+      }));
+      return;
+    }
+    if (isSessionPing) {
+      stream.respond(getAuthResponseHeaders(200, {
+        'content-type': 'application/json; charset=utf-8'
+      }));
+      stream.end(JSON.stringify({
+        ok: true,
+        activeDevices: leaseResult.activeDevices,
+        maxDevices: leaseResult.maxDevices,
+        serverTime: new Date().toISOString()
       }));
       return;
     }

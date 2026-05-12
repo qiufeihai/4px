@@ -14,6 +14,7 @@
   "h2SessionPoolSize": 1,
   "maxBufferedBytes": 4194304,
   "metricsIntervalMs": 30000,
+  "sessionHeartbeatIntervalMs": 30000,
   "socksListenBacklog": 4096,
   "upstreamConnectTimeoutMs": 15000,
   "streamResponseTimeoutMs": 30000,

@@ -45,7 +45,7 @@ cd apps/go/gui
 ```
 
 脚本会执行：
-- 自动调用 `wails build -clean`；
+- 自动调用 `wails build`；
 - 从 `build/bin/*.app` 取最新 GUI 产物；
 - 在 `apps/go/gui/releases/` 产出一个发布目录（内含 `.app`）；
 - 同目录生成一个 `*.meta.txt` 元数据文件。
@@ -101,22 +101,10 @@ cd apps/go/gui
 
 可选方案（当你本地没有 Windows 构建环境）：
 
-- 使用 GitHub Actions 工作流：`.github/workflows/gui-build.yml`
-- 在仓库页面 `Actions` -> `GUI Build Artifacts` -> `Run workflow`
-- 输入版本号（如 `v0.6.0`）后触发
-- 工作流会在 `macos-latest` 和 `windows-latest` 分别构建并上传原始产物 artifact（不再额外套内层 zip）
-- 你从 workflow artifacts 下载后只需解压一次，再上传到同一个 GitHub Release
-
-触发细节（页面操作）：
-
-1. 打开 GitHub 仓库主页，点击 `Actions`。
-2. 左侧选择 `GUI Build Artifacts`。
-3. 点击右上角 `Run workflow`。
-4. 选择分支（建议 `main`）。
-5. 在 `version` 输入版本（如 `v0.6.0`），点击确认运行。
-6. 等待两个 job（macOS、Windows）都完成为绿色 `Success`。
-7. 进入该次 workflow run 页面，在 `Artifacts` 区域下载两个 artifact 压缩包（GitHub 下载包）。
-8. 每个平台只需解压一次，取出应用产物后上传到同一个 Release。
+- 使用 GitHub Actions：`.github/workflows/gui-build.yml`
+- 在 `Actions -> GUI Build Artifacts -> Run workflow` 输入版本号后触发
+- 工作流会在 `macos-latest` 和 `windows-latest` 分别构建并上传 artifact
+- 下载 artifact 后解压一次，直接上传到同一个 GitHub Release
 
 常见问题：
 

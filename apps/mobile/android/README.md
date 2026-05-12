@@ -107,14 +107,14 @@ adb -s 127.0.0.1:7555 logcat | grep -i -E "FourPxVpnService|tunbridge|clientcore
 bash apps/mobile/android/scripts/gen_release_signing_secrets.sh
 ```
 
-将脚本输出的 4 个值复制到 GitHub：
+将脚本输出的 4 个值配置到 GitHub（推荐放在 Environment secrets，例如 `production`）：
 
 - `ANDROID_KEYSTORE_BASE64`
 - `ANDROID_KEYSTORE_PASSWORD`
 - `ANDROID_KEY_ALIAS`
 - `ANDROID_KEY_PASSWORD`
 
-配置完成后，`Android Release Build` workflow 会自动生成并上传可安装的 signed `app-release.apk`。
+配置完成后，触发 `Android Release Build` 时请将 `environment` 输入设为对应 Environment 名称（如 `production`），workflow 会生成并上传可安装的 signed `app-release.apk`。
 
 本地构建 signed release（可选）：
 
@@ -134,4 +134,4 @@ gradle -p apps/mobile/android :app:assembleRelease --no-daemon --parallel --buil
 ## Workflows
 
 - `Android Debug Build`：产出 `app-debug.apk`（适合 MuMu 日常调试，不依赖签名 Secrets）。
-- `Android Release Build`：产出 signed `app-release.apk`（适合正式分发与可覆盖升级）。
+- `Android Release Build`：产出 signed `app-release.apk`（适合正式分发与可覆盖升级，需 signing secrets + environment）。

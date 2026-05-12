@@ -18,6 +18,7 @@ const httpListen = cfg.httpListen || '';
 const httpListenBacklog = cfg.httpListenBacklog || 4096;
 const maxBufferedBytes = cfg.maxBufferedBytes || 4 * 1024 * 1024;
 const metricsIntervalMs = cfg.metricsIntervalMs || 30000;
+const sessionHeartbeatIntervalMs = Math.max(5000, Number(cfg.sessionHeartbeatIntervalMs) || 30000);
 const h2SessionPoolSize = Math.max(1, cfg.h2SessionPoolSize || 1);
 const socksListenBacklog = cfg.socksListenBacklog || 4096;
 const upstreamAuthToken = String((cfg.upstream && cfg.upstream.authToken) || '').trim();
@@ -150,20 +151,19 @@ function getH2Session(poolIndex) {
 async function openProxyStream(targetHost, targetPort) {
   const poolIndex = pickPoolIndex();
   const session = await getH2Session(poolIndex);
-  const reqHeaders = {
-    ':method': 'POST',
-    ':path': upstreamPath,
-    'x-auth-token': upstreamAuthToken,
-    'x-target-host': targetHost,
-    'x-target-port': String(targetPort)
-  };
-  if (upstreamDeviceTicket) {
-    reqHeaders['x-device-ticket'] = upstreamDeviceTicket;
-  }
-  const stream = session.request(reqHeaders);
-  logger.info(`open stream idx=${poolIndex} target=${targetHost}:${targetPort}`);
-
-  return new Promise((resolve, reject) => {
+  const openOnce = (ticket) => new Promise((resolve, reject) => {
+    const reqHeaders = {
+      ':method': 'POST',
+      ':path': upstreamPath,
+      'x-auth-token': upstreamAuthToken,
+      'x-target-host': targetHost,
+      'x-target-port': String(targetPort)
+    };
+    if (ticket) {
+      reqHeaders['x-device-ticket'] = ticket;
+    }
+    const stream = session.request(reqHeaders);
+    logger.info(`open stream idx=${poolIndex} target=${targetHost}:${targetPort}`);
     const timer = setTimeout(() => {
       stats.streamResponseTimeoutTotal += 1;
       stream.close();
@@ -187,13 +187,18 @@ async function openProxyStream(targetHost, targetPort) {
           logger.debug('device ticket updated from upstream response');
         }
       }
-      if (headers[':status'] !== 200) {
+      const statusCode = Number(headers[':status'] || 0);
+      if (statusCode !== 200) {
         stats.streamRejectedTotal += 1;
-        const statusCode = Number(headers[':status'] || 0);
+        const authReason = String(headers && headers['x-auth-reason'] ? headers['x-auth-reason'] : '').trim();
         const errClass = statusCode === 401 || statusCode === 403 ? 'non-retryable' : 'retryable';
         markClientError(errClass);
-        logger.warn(`stream rejected by server mode=${upstreamPath} status=${statusCode} target=${targetHost}:${targetPort} err_class=${errClass}`);
-        reject(new Error(`upstream status=${headers[':status']}`));
+        logger.warn(`stream rejected by server mode=${upstreamPath} status=${statusCode} target=${targetHost}:${targetPort} auth_reason=${authReason || '-'} err_class=${errClass}`);
+        stream.close();
+        const err = new Error(`upstream status=${statusCode}${authReason ? ` auth_reason=${authReason}` : ''}`);
+        err.statusCode = statusCode;
+        err.authReason = authReason;
+        reject(err);
         return;
       }
       logger.info(`stream established id=${stream.id} idx=${poolIndex} target=${targetHost}:${targetPort}`);
@@ -204,6 +209,18 @@ async function openProxyStream(targetHost, targetPort) {
       reject(err);
     });
   });
+
+  const originalTicket = String(upstreamDeviceTicket || '').trim();
+  try {
+    return await openOnce(originalTicket);
+  } catch (err) {
+    if (originalTicket && err && err.statusCode === 401 && err.authReason === 'invalid_device_ticket') {
+      upstreamDeviceTicket = '';
+      logger.info('device ticket cleared due to invalid upstream ticket, retrying without ticket');
+      return openOnce('');
+    }
+    throw err;
+  }
 }
 
 async function sendOfflineSignal() {
@@ -237,6 +254,94 @@ async function sendOfflineSignal() {
       reject(err);
     });
   });
+}
+
+async function sendSessionPing() {
+  const poolIndex = pickPoolIndex();
+  const session = await getH2Session(poolIndex);
+  const reqHeaders = {
+    ':method': 'POST',
+    ':path': '/session/ping',
+    'x-auth-token': upstreamAuthToken
+  };
+  const ticket = String(upstreamDeviceTicket || '').trim();
+  if (ticket) {
+    reqHeaders['x-device-ticket'] = ticket;
+  }
+  const stream = session.request(reqHeaders);
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      stream.close();
+      reject(new Error('ping response timeout'));
+    }, Math.min(5000, streamResponseTimeoutMs));
+    stream.once('response', (headers) => {
+      clearTimeout(timer);
+      const nextDeviceTicket = String(headers && headers['x-device-ticket'] ? headers['x-device-ticket'] : '').trim();
+      if (nextDeviceTicket && nextDeviceTicket !== upstreamDeviceTicket) {
+        upstreamDeviceTicket = nextDeviceTicket;
+        if (logger.enabled('DEBUG')) {
+          logger.debug('device ticket updated from ping response');
+        }
+      }
+      const statusCode = Number(headers[':status'] || 0);
+      if (statusCode !== 200) {
+        const authReason = String(headers && headers['x-auth-reason'] ? headers['x-auth-reason'] : '').trim();
+        if (statusCode === 401 && authReason === 'invalid_device_ticket') {
+          upstreamDeviceTicket = '';
+          logger.info('device ticket cleared due to invalid ping ticket');
+        }
+        reject(new Error(`ping status=${statusCode}${authReason ? ` auth_reason=${authReason}` : ''}`));
+        return;
+      }
+      resolve();
+    });
+    stream.once('error', (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+  });
+}
+
+let heartbeatTimer = null;
+let heartbeatFailures = 0;
+let shutdownInProgress = false;
+
+function nextHeartbeatDelayMs() {
+  const factor = heartbeatFailures > 0 ? Math.min(1 << Math.min(heartbeatFailures, 4), 16) : 1;
+  const base = Math.min(sessionHeartbeatIntervalMs * factor, 120000);
+  const jitter = Math.max(500, Math.floor(base * 0.2));
+  const delta = Math.floor(Math.random() * (jitter * 2 + 1)) - jitter;
+  return Math.max(5000, base + delta);
+}
+
+function scheduleHeartbeat() {
+  if (shutdownInProgress) return;
+  heartbeatTimer = setTimeout(async () => {
+    try {
+      await sendSessionPing();
+      heartbeatFailures = 0;
+    } catch (err) {
+      heartbeatFailures = Math.min(heartbeatFailures + 1, 6);
+      const errClass = classifyClientError(err);
+      markClientError(errClass);
+      logger.warn(`session ping failed err_class=${errClass}`, String((err && err.message) || err));
+    } finally {
+      scheduleHeartbeat();
+    }
+  }, nextHeartbeatDelayMs());
+  heartbeatTimer.unref();
+}
+
+async function startSessionHeartbeat() {
+  try {
+    await sendSessionPing();
+    heartbeatFailures = 0;
+  } catch (err) {
+    heartbeatFailures = 1;
+    logger.warn('initial session ping failed', String((err && err.message) || err));
+  } finally {
+    scheduleHeartbeat();
+  }
 }
 
 function bridgeDuplex(left, right, onOverflow) {
@@ -533,11 +638,13 @@ function startHttpProxyIfEnabled() {
 }
 
 const httpProxyServer = startHttpProxyIfEnabled();
-
-let shutdownInProgress = false;
 async function shutdown(exitCode, reason) {
   if (shutdownInProgress) return;
   shutdownInProgress = true;
+  if (heartbeatTimer) {
+    clearTimeout(heartbeatTimer);
+    heartbeatTimer = null;
+  }
   if (reason) {
     logger.info(`shutdown requested reason=${reason}`);
   }
@@ -575,3 +682,5 @@ process.on('SIGINT', () => {
 process.on('SIGTERM', () => {
   void shutdown(0, 'SIGTERM');
 });
+
+void startSessionHeartbeat();

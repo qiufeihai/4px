@@ -8,7 +8,9 @@
 
 - 配置管理：读取/保存 `client.json`
 - 客户端控制：启动/停止、运行状态、日志面板
+- 会话状态：有效期查询（手动刷新）
 - 系统代理：查看状态、开启、关闭
+- 会话保活：运行期通过 `/session/ping` 保活，停止时调用 `/session/offline`
 - 停止保护：支持“停止后自动关闭系统代理”（可选开关，默认开启）
 - 退出保护：关闭 GUI 窗口时，若客户端由 GUI 启动且仍在运行，会自动执行“停止客户端 + 关闭系统代理”
 - 模式固定：客户端仅使用 `upstream_path=/proxy`
@@ -30,6 +32,7 @@
 ## 模式说明
 
 - 默认模板使用 `upstream_path=/proxy`（稳定优先模式）。
+- `clientcore` 会自动维护 `device_ticket`，无需手工干预。
 
 ## 本地运行（开发）
 
@@ -74,16 +77,6 @@ $(go env GOPATH)/bin/wails build -platform windows/amd64
 - “停止 Client”仅控制由应用启动的实例。
 - 若勾选“停止后自动关闭系统代理”，停止时会额外执行系统代理关闭。
 - 点窗口左上角 `×` 退出时，应用会做一次同等清理（仅处理由本 GUI 启动的客户端实例）。
-
-健康检查（升级后建议执行一次）：
-
-```bash
-seq 200 | xargs -P 40 -I{} sh -c 'curl -sS -o /dev/null -x http://127.0.0.1:7788 https://206.119.179.201:8080/ --max-time 30; echo $?' | awk 'BEGIN{ok=0;fail=0}{if($1==0) ok++; else fail++} END {print "ok="ok,"fail="fail,"rate="(ok*100/(ok+fail))"%"}'
-```
-
-判定建议：
-- `rate >= 99%`：通过；
-- `rate < 99%`：先重启 GUI client 后复测，再看日志定位。
 
 ## 常见问题
 

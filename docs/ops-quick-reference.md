@@ -1,6 +1,6 @@
 # 4px 运维速查
 
-适用范围：当前默认主路径 `/proxy`。
+适用范围：当前数据面主路径 `/proxy`，会话控制面为 `/session/ping|status|offline`。
 
 ## 快速判断
 
@@ -24,6 +24,13 @@
 3. 看过载信号：检查过载拒绝与 in-flight 是否长期贴边。
 4. 看事件循环：若 `eventloop_p95_ms` 偏高，优先降噪和削峰。
 5. 做单变量调参：每次只改 1 个参数并观察一个完整高峰周期。
+
+## 会话保活排查
+
+- 客户端运行中但无业务流量：优先检查 `/session/ping` 是否连续成功。
+- 出现 `x-auth-reason=invalid_device_ticket`：确认客户端是否已自动清理 ticket 并重试。
+- 停止客户端后设备占用未释放：先看 `/session/offline` 是否发送成功，失败时由 TTL 兜底回收。
+- `/proxy` 仍保留最终准入校验，`/session/ping` 只承担会话续租与票据刷新，不替代最终准入。
 
 ## 术语
 
