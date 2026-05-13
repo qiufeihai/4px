@@ -218,7 +218,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun showLogsDialog() {
         val logs = AppLog.dump().ifBlank { getString(R.string.logs_empty) }
-        val versionText = "版本 ${appVersionName()} (${appVersionCode()})"
+        val versionText = "版本 ${appVersionName()}"
         AlertDialog.Builder(this)
             .setTitle(R.string.logs_title)
             .setMessage("$logs\n\n$versionText")

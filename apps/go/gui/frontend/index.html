@@ -328,13 +328,7 @@
       try {
         const info = await backend.GetAppInfo();
         const v = String((info && info.clientVersion) || "").trim();
-        const sha = String((info && info.gitSha) || "").trim();
-        const bt = String((info && info.buildTime) || "").trim();
-        const parts = [];
-        if (v) parts.push("client " + v);
-        if (sha && sha !== "nogit") parts.push("git " + sha);
-        if (bt) parts.push(bt);
-        ui.appVersion.textContent = parts.length ? ("版本: " + parts.join(" | ")) : "";
+        ui.appVersion.textContent = v ? ("版本: " + v) : "";
       } catch (_err) {
         ui.appVersion.textContent = "";
       }
