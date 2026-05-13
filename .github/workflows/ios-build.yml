@@ -4,9 +4,8 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version label (e.g. v0.1.0)"
-        required: true
-        default: "v0.1.0"
+        description: "Version label (optional, default: v<VERSION.client>)"
+        required: false
       upload_testflight:
         description: "Upload IPA to TestFlight"
         required: true
@@ -31,6 +30,18 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Resolve version label
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION_INPUT="${{ inputs.version }}"
+          if [ -n "$VERSION_INPUT" ]; then
+            VERSION="$VERSION_INPUT"
+          else
+            VERSION="v$(tr -d '[:space:]' < VERSION.client)"
+          fi
+          echo "VERSION_LABEL=$VERSION" >> "$GITHUB_ENV"
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -182,7 +193,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          VERSION="${{ inputs.version }}"
+          VERSION="$VERSION_LABEL"
           GITSHA="$(git rev-parse --short HEAD)"
           IPA_PATH="$(find "$IOS_EXPORT_PATH" -maxdepth 1 -name "*.ipa" | head -n 1)"
           test -n "$IPA_PATH"

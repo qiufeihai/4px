@@ -8,9 +8,8 @@ on:
         required: true
         default: "production"
       version:
-        description: "Release version label (e.g. v0.8.0)"
-        required: true
-        default: "v0.8.0"
+        description: "Release version label (optional, default: v<VERSION.client>)"
+        required: false
 
 jobs:
   build-android:
@@ -30,6 +29,18 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Resolve version label
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION_INPUT="${{ inputs.version }}"
+          if [ -n "$VERSION_INPUT" ]; then
+            VERSION="$VERSION_INPUT"
+          else
+            VERSION="v$(tr -d '[:space:]' < VERSION.client)"
+          fi
+          echo "VERSION_LABEL=$VERSION" >> "$GITHUB_ENV"
 
       - name: Cache tun2socks AAR
         id: cache-aar
@@ -133,7 +144,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          VERSION="${{ inputs.version }}"
+          VERSION="$VERSION_LABEL"
           GITSHA="$(git rev-parse --short HEAD)"
           echo "APK_NAME=4px-android_${VERSION}_release_${GITSHA}" >> "$GITHUB_ENV"
           echo "AAR_NAME=4px-tun2socks_${VERSION}_release_${GITSHA}" >> "$GITHUB_ENV"

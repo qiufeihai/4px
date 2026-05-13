@@ -4,9 +4,8 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version label (e.g. v0.6.0)"
-        required: true
-        default: "v0.0.0"
+        description: "Version label (optional, default: v<VERSION.client>)"
+        required: false
 
 jobs:
   build-gui:
@@ -22,6 +21,18 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Resolve version label
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION_INPUT="${{ inputs.version }}"
+          if [ -n "$VERSION_INPUT" ]; then
+            VERSION="$VERSION_INPUT"
+          else
+            VERSION="v$(tr -d '[:space:]' < VERSION.client)"
+          fi
+          echo "VERSION_LABEL=$VERSION" >> "$GITHUB_ENV"
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -48,7 +59,7 @@ jobs:
         if: runner.os == 'macOS'
         working-directory: apps/go/gui
         run: |
-          VERSION="${{ inputs.version }}"
+          VERSION="$VERSION_LABEL"
           GITSHA="$(git rev-parse --short HEAD)"
           BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           "$(go env GOPATH)/bin/wails" build -ldflags "-X main.AppVersion=$VERSION -X main.GitSHA=$GITSHA -X main.BuildTime=$BUILT_AT"
@@ -59,7 +70,7 @@ jobs:
         shell: pwsh
         run: |
           $wails = "$(go env GOPATH)\bin\wails.exe"
-          $version = "${{ inputs.version }}"
+          $version = $env:VERSION_LABEL
           $gitsha = (git rev-parse --short HEAD).Trim()
           $builtAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
           & $wails build -ldflags "-X main.AppVersion=$version -X main.GitSHA=$gitsha -X main.BuildTime=$builtAt"
@@ -69,7 +80,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          VERSION="${{ inputs.version }}"
+          VERSION="$VERSION_LABEL"
           GITSHA="$(git rev-parse --short HEAD)"
           ARCH="$(uname -m)"
           case "$ARCH" in
@@ -88,7 +99,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $version = "${{ inputs.version }}"
+          $version = $env:VERSION_LABEL
           $gitsha = (git rev-parse --short HEAD).Trim()
           $artifact = "4px-client_${version}_windows_amd64_${gitsha}"
           $binDir = "apps/go/gui/build/bin"
