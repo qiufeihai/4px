@@ -6,12 +6,20 @@ export function ClearClientLogs() {
   return window['go']['main']['App']['ClearClientLogs']();
 }
 
+export function GetAppInfo() {
+  return window['go']['main']['App']['GetAppInfo']();
+}
+
 export function GetClientLogs(arg1) {
   return window['go']['main']['App']['GetClientLogs'](arg1);
 }
 
 export function GetClientStatus() {
   return window['go']['main']['App']['GetClientStatus']();
+}
+
+export function GetSessionStatus(arg1) {
+  return window['go']['main']['App']['GetSessionStatus'](arg1);
 }
 
 export function IsClientRunning() {

@@ -4,9 +4,13 @@ import {main} from '../models';
 
 export function ClearClientLogs():Promise<void>;
 
+export function GetAppInfo():Promise<main.AppInfo>;
+
 export function GetClientLogs(arg1:number):Promise<Array<string>>;
 
 export function GetClientStatus():Promise<main.ClientStatus>;
+
+export function GetSessionStatus(arg1:string):Promise<main.SessionStatus>;
 
 export function IsClientRunning():Promise<boolean>;
 

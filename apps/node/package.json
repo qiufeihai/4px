@@ -7,9 +7,13 @@
   },
   "scripts": {
     "4px": "node bin/4px.js",
+    "lint": "eslint bin src",
     "start:server": "node src/server.js -c config/server.json",
     "start:client": "node src/client.js -c config/client.json",
     "start": "node bin/4px.js"
+  },
+  "devDependencies": {
+    "eslint": "^9.27.0"
   },
   "dependencies": {
     "redis": "^4.7.0"

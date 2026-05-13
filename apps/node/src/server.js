@@ -1369,7 +1369,7 @@ async function initDeviceLeaseStore() {
   deviceLeaseStoreResolvedMode = initialized.mode || 'memory';
   closeDeviceLeaseStore = typeof initialized.close === 'function' ? initialized.close : async () => {};
   logger.info(
-    `device lease store ready, mode=${deviceLeaseStoreResolvedMode}, ttl_ms=${deviceLeaseTtlMs}, bind_peer_ip=${deviceLeaseBindPeerIp}`
+    `device lease store ready, mode=${deviceLeaseStoreResolvedMode}, ttl_ms=${deviceLeaseTtlMs}`
   );
 }
 
