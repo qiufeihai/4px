@@ -212,7 +212,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun showLogsDialog() {
         val logs = AppLog.dump().ifBlank { getString(R.string.logs_empty) }
-        val versionText = "版本 ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})"
+        val versionText = "版本 ${appVersionName()} (${appVersionCode()})"
         AlertDialog.Builder(this)
             .setTitle(R.string.logs_title)
             .setMessage("$logs\n\n$versionText")
@@ -222,6 +222,16 @@ class MainActivity : AppCompatActivity() {
                 Toast.makeText(this, getString(R.string.logs_cleared), Toast.LENGTH_SHORT).show()
             }
             .show()
+    }
+
+    private fun appVersionName(): String {
+        val info = packageManager.getPackageInfo(packageName, 0)
+        return info.versionName ?: "?"
+    }
+
+    private fun appVersionCode(): Long {
+        val info = packageManager.getPackageInfo(packageName, 0)
+        return info.longVersionCode
     }
 
     private fun buildTunbridgeConfigJson(config: AppConfig): String {
