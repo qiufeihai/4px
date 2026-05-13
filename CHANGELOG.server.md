@@ -14,6 +14,7 @@
 ### Fixed
 
 - 修复单进程 `deviceLeaseStore.mode=memory` 下管理后台“活跃设备数”读不到数据面租约的问题，改为通过 IPC 向数据面进程查询
+- 为 `apps/node` 增加并清理最小 ESLint 校验，消除当前遗留 warning，降低 `xx is not defined` 等静态错误在部署后才暴露的风险
 
 ### Removed
 
