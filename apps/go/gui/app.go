@@ -147,7 +147,7 @@ func (a *App) StartClient(configPath string) error {
 	a.mu.Lock()
 	if a.clientCancel != nil {
 		a.mu.Unlock()
-		return errors.New("client is already running")
+		return errors.New("客户端已在运行中")
 	}
 
 	cfgPath := strings.TrimSpace(configPath)
@@ -163,6 +163,16 @@ func (a *App) StartClient(configPath string) error {
 	if err != nil {
 		a.mu.Unlock()
 		return err
+	}
+	probe := clientcore.ConnectProbe(cfg, "www.google.com", 443)
+	if !probe.OK {
+		a.lastError = probe.Error
+		a.pushLogLineLocked(fmt.Sprintf("[%s] client start probe failed: %s", time.Now().Format(time.RFC3339), probe.Error))
+		a.mu.Unlock()
+		return errors.New(probe.Error)
+	}
+	if probe.NextDeviceTicket != "" {
+		cfg.DeviceTicket = probe.NextDeviceTicket
 	}
 
 	runCtx, cancel := context.WithCancel(context.Background())

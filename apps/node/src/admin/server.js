@@ -18,7 +18,7 @@ function parseJsonBody(req) {
       }
       try {
         resolve(JSON.parse(text));
-      } catch (err) {
+      } catch {
         reject(new Error('invalid json body'));
       }
     });
@@ -112,7 +112,7 @@ function loadClientTemplate(cfg) {
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
       return parsed;
     }
-  } catch (err) {
+  } catch {
     // fall back to a minimal template
   }
   return {

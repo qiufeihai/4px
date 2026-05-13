@@ -16,6 +16,9 @@ import org.json.JSONObject
 import java.lang.reflect.Method
 import java.net.Inet4Address
 import java.net.InetAddress
+import java.time.OffsetDateTime
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
@@ -455,7 +458,21 @@ class MainActivity : AppCompatActivity() {
         if (result.remainingDays == 1) {
             return getString(R.string.expiry_less_than_one_day)
         }
-        return getString(R.string.expiry_remaining_days, result.remainingDays, result.expireAt)
+        return getString(R.string.expiry_remaining_days, result.remainingDays, formatExpiryTime(result.expireAt))
+    }
+
+    private fun formatExpiryTime(raw: String): String {
+        val value = raw.trim()
+        if (value.isEmpty()) {
+            return raw
+        }
+        return try {
+            OffsetDateTime.parse(value)
+                .atZoneSameInstant(ZoneId.systemDefault())
+                .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
+        } catch (_: Exception) {
+            raw
+        }
     }
 
     private fun resolvePreferredUpstreamHost(host: String): String {
@@ -492,10 +509,13 @@ class MainActivity : AppCompatActivity() {
         if (lower.contains("go bridge not available")) {
             return getString(R.string.error_bridge_unavailable)
         }
+        if (authReason == "missing_device_id") {
+            return getString(R.string.error_missing_device_id)
+        }
         if (
             lower.contains("device_limit_exceeded") ||
-            authReason?.contains("device_limit") == true ||
-            authReason?.contains("device") == true
+            authReason == "device_limit_exceeded" ||
+            authReason?.contains("device_limit") == true
         ) {
             return getString(R.string.error_device_limit)
         }
@@ -541,8 +561,7 @@ class MainActivity : AppCompatActivity() {
         }
         if (lower.contains("status=403")) {
             return when {
-                authReason?.contains("device_limit") == true -> getString(R.string.error_device_limit)
-                authReason?.contains("device") == true -> getString(R.string.error_device_limit)
+                authReason == "device_limit_exceeded" || authReason?.contains("device_limit") == true -> getString(R.string.error_device_limit)
                 else -> getString(R.string.error_forbidden)
             }
         }

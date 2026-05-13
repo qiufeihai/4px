@@ -150,7 +150,7 @@ function createRemoteConnection(host, port, family) {
       autoSelectFamily: true,
       autoSelectFamilyAttemptTimeout: remoteAutoSelectFamilyAttemptTimeoutMs
     });
-  } catch (err) {
+  } catch {
     remoteAutoSelectFamilyRuntimeEnabled = false;
     if (!remoteAutoSelectFamilyFallbackWarned) {
       remoteAutoSelectFamilyFallbackWarned = true;
@@ -459,7 +459,7 @@ function sendMetricsReporterMessage(type, payload) {
     try {
       process.send({ type: 'metrics_report', kind: type, payload });
       return true;
-    } catch (err) {
+    } catch {
       return false;
     }
   }
@@ -755,7 +755,7 @@ function verifyDeviceTicket(ticketText, userId) {
   let payload;
   try {
     payload = JSON.parse(decodeBase64Url(encodedPayload));
-  } catch (_) {
+  } catch {
     return { ok: false, reason: 'payload_json' };
   }
   const uid = String(payload && payload.uid ? payload.uid : '');

@@ -469,9 +469,9 @@
       }
       try {
         await backend.StartClient(getConfigPath());
-        showMessage("Client 启动成功", false);
+        showMessage("客户端启动成功", false);
       } catch (err) {
-        showMessage("启动失败: " + (err || ""), true);
+        showMessage("启动失败: " + localizeClientError(err), true);
       } finally {
         await refreshStatus();
         await refreshLogs();
@@ -487,11 +487,11 @@
       try {
         const autoDisable = !!ui.stopAutoDisableProxy.checked;
         await backend.StopClient(autoDisable);
-        showMessage(autoDisable ? "Client 已停止，并已尝试关闭系统代理" : "Client 已停止", false);
+        showMessage(autoDisable ? "客户端已停止，并已尝试关闭系统代理" : "客户端已停止", false);
       } catch (err) {
         const msg = String(err || "");
         if (msg.includes("client is not running")) {
-          showMessage("Client 未在应用内运行（仅能停止由应用启动的实例）", false);
+          showMessage("客户端当前未在应用内运行（仅能停止由应用启动的实例）", false);
         } else {
           showMessage("停止失败: " + msg, true);
         }
@@ -569,7 +569,7 @@
       if (Number(status.remainingDays) === 1) {
         return "不足 1 天";
       }
-      return `剩余 ${status.remainingDays} 天`;
+      return `剩余 ${status.remainingDays} 天（到期：${formatExpiryTime(status.expireAt)}）`;
     }
 
     function formatDisplayTime(value) {
@@ -578,6 +578,74 @@
       const d = new Date(raw);
       if (Number.isNaN(d.getTime())) return raw;
       return d.toLocaleString("zh-CN", { hour12: false });
+    }
+
+    function formatExpiryTime(value) {
+      const raw = String(value || "").trim();
+      if (!raw) return "-";
+      const d = new Date(raw);
+      if (Number.isNaN(d.getTime())) return raw;
+      const year = d.getFullYear();
+      const month = String(d.getMonth() + 1).padStart(2, "0");
+      const day = String(d.getDate()).padStart(2, "0");
+      const hour = String(d.getHours()).padStart(2, "0");
+      const minute = String(d.getMinutes()).padStart(2, "0");
+      return `${year}-${month}-${day} ${hour}:${minute}`;
+    }
+
+    function localizeClientError(raw) {
+      const message = String(raw || "").trim();
+      if (!message) return "未知错误";
+      const lower = message.toLowerCase();
+      const authReasonMatch = /auth_reason=([a-zA-Z0-9_\-]+)/.exec(message);
+      const authReason = authReasonMatch && authReasonMatch[1] ? authReasonMatch[1].toLowerCase() : "";
+
+      if (/device_limit_exceeded|status=409/i.test(message) || authReason === "device_limit_exceeded") {
+        return "设备数已达上限：请先断开其它设备，或联系管理员调整设备上限。";
+      }
+      if (lower.includes("客户端已在运行中") || lower.includes("client is already running")) {
+        return "客户端已在运行中";
+      }
+      if (authReason === "invalid_token" || lower.includes("invalid_token")) {
+        return "授权失败，请检查授权令牌";
+      }
+      if (authReason === "expired_user") {
+        return "账号已过期，请联系管理员续期";
+      }
+      if (authReason === "disabled_user") {
+        return "账号已被禁用，请联系管理员启用";
+      }
+      if (authReason === "missing_token") {
+        return "未填写授权令牌，请检查客户端配置";
+      }
+      if (authReason === "missing_device_id") {
+        return "设备标识缺失，请重新启动客户端后重试";
+      }
+      if (authReason === "invalid_device_ticket" || authReason === "expired_or_invalid" || authReason === "user_mismatch") {
+        return "设备身份已失效，请断开后重新连接";
+      }
+      if (/status=404/i.test(message)) {
+        return "客户端与服务端接口不匹配，请升级到兼容版本";
+      }
+      if (/status=400/i.test(message)) {
+        return "请求格式错误，请检查客户端配置或版本";
+      }
+      if (/status=429|too many requests/i.test(message)) {
+        return "请求过于频繁，请稍后重试";
+      }
+      if (/status=502/i.test(message)) {
+        return "目标站点不可达或解析失败，请稍后重试";
+      }
+      if (/status=503|circuit open|overload/i.test(message)) {
+        return "服务端当前过载或暂时不可用，请稍后重试";
+      }
+      if (
+        /status=401|status=403|unauthorized|forbidden|invalid_token/i.test(message)
+        && /upstream|auth|reject/i.test(message)
+      ) {
+        return "授权失败，请检查授权令牌";
+      }
+      return message;
     }
 
     function setSummaryTone(level) {
@@ -603,40 +671,40 @@
         const line = String(arr[i] || "");
         if (!line) continue;
         if (/invalid_device_ticket|auth_reason=invalid_device_ticket|auth_reason=expired_or_invalid|auth_reason=user_mismatch/i.test(line)) {
-          return "设备身份已失效：请断开后重新连接，必要时检查网络环境是否变化。";
+          return "设备身份已失效，请断开后重新连接";
         }
         if (/missing_token|auth_reason=missing_token/i.test(line)) {
-          return "未填写授权令牌：请检查客户端配置中的 auth_token。";
+          return "未填写授权令牌，请检查客户端配置";
         }
         if (/device_limit_exceeded|auth_reason=device_limit_exceeded|status=409/i.test(line)) {
-          return "设备数已达上限：请先断开其它设备后再重试。";
+          return "设备数已达上限：请先断开其它设备，或联系管理员调整设备上限。";
         }
         if (/expired_user|auth_reason=expired_user|upstream status=401 auth_reason=expired_user/i.test(line)) {
-          return "账号已过期：请在管理后台延长该用户有效期，或更换为未过期 token。";
+          return "账号已过期，请联系管理员续期";
         }
         if (/disabled_user|auth_reason=disabled_user|upstream status=401 auth_reason=disabled_user/i.test(line)) {
-          return "账号已被禁用：请在管理后台启用该用户，或更换为可用 token。";
+          return "账号已被禁用，请联系管理员启用";
         }
         if (/status=429|too many requests/i.test(line)) {
-          return "请求过于频繁：请稍后重试。";
+          return "请求过于频繁，请稍后重试";
         }
         if (/status=404/i.test(line)) {
-          return "客户端与服务端接口不匹配：请升级到兼容版本。";
+          return "客户端与服务端接口不匹配，请升级到兼容版本";
         }
         if (/status=400/i.test(line)) {
-          return "请求格式错误：请检查客户端配置或版本是否正确。";
+          return "请求格式错误，请检查客户端配置或版本";
         }
         if (/status=502/i.test(line)) {
-          return "目标站点不可达或解析失败：请稍后重试，或检查服务端出口网络。";
+          return "目标站点不可达或解析失败，请稍后重试";
         }
         if (/status=503|circuit open|overload/i.test(line)) {
-          return "服务端当前过载或暂时不可用：请稍后重试。";
+          return "服务端当前过载或暂时不可用，请稍后重试";
         }
         if (
           /status=401|status=403|unauthorized|forbidden|invalid_token/i.test(line)
           && /upstream|auth|reject/i.test(line)
         ) {
-          return "鉴权失败：当前 auth_token 可能已失效或用户被禁用，请在管理后台确认用户状态并更新 token。";
+          return "授权失败，请检查授权令牌";
         }
       }
       return "";
@@ -702,7 +770,7 @@
           " | 有效期=" + formatExpiryText(sessionStatus) +
           " | 未保存配置=" + toYesNoText(hasUnsavedConfig) +
           (authIssueHint ? " | 鉴权问题=" + authIssueHint : "") +
-          (s.lastError ? " | 客户端错误=" + s.lastError : "");
+          (s.lastError ? " | 客户端错误=" + localizeClientError(s.lastError) : "");
         if (s.lastError) {
           setSummaryTone("err");
         } else if (authIssueHint) {
@@ -728,7 +796,7 @@
         if (!s || !s.ok) {
           ui.expiry.textContent = "有效期: 获取失败";
           if (showToast) {
-            showMessage("有效期获取失败: " + ((s && s.error) || "未知错误"), true);
+            showMessage("有效期获取失败: " + localizeClientError((s && s.error) || "未知错误"), true);
           }
         } else if (Number(s.remainingDays) < 0 || !s.expireAt) {
           ui.expiry.textContent = "有效期: 长期有效";
@@ -740,13 +808,13 @@
           ui.expiry.textContent = "有效期: 不足 1 天";
           if (showToast) showMessage("有效期状态已刷新", false);
         } else {
-          ui.expiry.textContent = "有效期: 剩余 " + s.remainingDays + " 天";
+          ui.expiry.textContent = "有效期: 剩余 " + s.remainingDays + " 天（到期：" + formatExpiryTime(s.expireAt) + "）";
           if (showToast) showMessage("有效期状态已刷新", false);
         }
       } catch (err) {
         sessionStatus = null;
         ui.expiry.textContent = "有效期: 获取失败";
-        if (showToast) showMessage("有效期获取失败: " + (err || ""), true);
+        if (showToast) showMessage("有效期获取失败: " + localizeClientError(err), true);
       } finally {
         await refreshStatus();
       }

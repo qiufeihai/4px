@@ -102,12 +102,12 @@ function readOrCreateDeviceId(filePath) {
   try {
     const existing = String(fs.readFileSync(sidecar, 'utf8') || '').trim();
     if (existing) return existing;
-  } catch (_) {
+  } catch {
   }
   const generated = `node-${crypto.randomUUID()}`;
   try {
     fs.writeFileSync(sidecar, `${generated}\n`, { mode: 0o600 });
-  } catch (_) {
+  } catch {
   }
   return generated;
 }
@@ -686,17 +686,17 @@ async function shutdown(exitCode, reason) {
   }
   try {
     socksServer.close();
-  } catch (_) {}
+  } catch {}
   if (httpProxyServer) {
     try {
       httpProxyServer.close();
-    } catch (_) {}
+    } catch {}
   }
   for (const slot of sessionPool) {
     if (slot && slot.session && !slot.session.closed && !slot.session.destroyed) {
       try {
         slot.session.close();
-      } catch (_) {}
+      } catch {}
     }
     slot.session = null;
     slot.pending = null;

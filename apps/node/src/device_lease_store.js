@@ -234,7 +234,7 @@ async function createDeviceLeaseStore(options = {}) {
   let redisModule;
   try {
     redisModule = require('redis');
-  } catch (err) {
+  } catch {
     throw new Error('device lease store redis mode requires dependency "redis"');
   }
 
@@ -261,10 +261,10 @@ async function createDeviceLeaseStore(options = {}) {
     close: async () => {
       try {
         await redis.quit();
-      } catch (err) {
+      } catch {
         try {
           redis.disconnect();
-        } catch (_) {}
+        } catch {}
       }
     }
   };
