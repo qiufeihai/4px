@@ -36,6 +36,12 @@ type SessionStatus struct {
 	ServerTime    string `json:"serverTime,omitempty"`
 }
 
+type AppInfo struct {
+	ClientVersion string `json:"clientVersion"`
+	GitSHA        string `json:"gitSha"`
+	BuildTime     string `json:"buildTime"`
+}
+
 type App struct {
 	ctx            context.Context
 	mu             sync.Mutex
@@ -344,6 +350,15 @@ func (a *App) GetSessionStatus(configPath string) SessionStatus {
 		RemainingDays: res.RemainingDays,
 		Expired:       res.Expired,
 		ServerTime:    res.ServerTime,
+	}
+}
+
+func (a *App) GetAppInfo() AppInfo {
+	_ = a
+	return AppInfo{
+		ClientVersion: strings.TrimSpace(AppVersion),
+		GitSHA:        strings.TrimSpace(GitSHA),
+		BuildTime:     strings.TrimSpace(BuildTime),
 	}
 }
 

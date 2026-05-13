@@ -146,6 +146,12 @@
       line-height: 1.4;
       word-break: break-word;
     }
+    .app-version {
+      margin-top: 8px;
+      font-size: 12px;
+      color: var(--muted);
+      word-break: break-word;
+    }
     .status-summary-ok {
       border-color: #86efac;
       background: #f0fdf4;
@@ -257,6 +263,7 @@
       </div>
       <div id="statusSummary" class="status-summary">状态摘要: -</div>
       <div id="logs" class="logs"></div>
+      <div id="appVersion" class="app-version"></div>
     </section>
   </div>
 
@@ -286,7 +293,8 @@
       exited: document.getElementById("statusExited"),
       proxy: document.getElementById("statusProxy"),
       expiry: document.getElementById("statusExpiry"),
-      statusSummary: document.getElementById("statusSummary")
+      statusSummary: document.getElementById("statusSummary"),
+      appVersion: document.getElementById("appVersion")
     };
     let proxyState = "unknown";
     let authIssueHint = "";
@@ -309,6 +317,26 @@
         return JSON.stringify(cfg || {});
       } catch (err) {
         return "";
+      }
+    }
+
+    async function refreshAppInfo() {
+      const backend = api();
+      if (!backend || !ui.appVersion) {
+        return;
+      }
+      try {
+        const info = await backend.GetAppInfo();
+        const v = String((info && info.clientVersion) || "").trim();
+        const sha = String((info && info.gitSha) || "").trim();
+        const bt = String((info && info.buildTime) || "").trim();
+        const parts = [];
+        if (v) parts.push("client " + v);
+        if (sha && sha !== "nogit") parts.push("git " + sha);
+        if (bt) parts.push(bt);
+        ui.appVersion.textContent = parts.length ? ("版本: " + parts.join(" | ")) : "";
+      } catch (_err) {
+        ui.appVersion.textContent = "";
       }
     }
 
@@ -779,6 +807,7 @@
         ui.stopAutoDisableProxy.checked = false;
       }
       bindEvents();
+      await refreshAppInfo();
       await refreshStatus();
       await refreshLogs();
       await refreshProxyState(false);

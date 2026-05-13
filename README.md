@@ -73,3 +73,5 @@ docs/          # 运维/发布/性能文档
 - 运维速查：`docs/ops-quick-reference.md`
 - GUI 发布：`docs/release-gui.md`
 - 性能记录：`docs/performance-todo.md`
+- 版本号与变更日志：`docs/versioning.md`
+- AI 开发规则：`docs/ai-rules.md`

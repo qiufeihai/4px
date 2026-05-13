@@ -1,4 +1,5 @@
 const fs = require('fs');
+const os = require('os');
 const dns = require('dns');
 const net = require('net');
 const path = require('path');
@@ -7,7 +8,7 @@ const { fork } = require('child_process');
 const { monitorEventLoopDelay } = require('perf_hooks');
 const crypto = require('crypto');
 const { loadConfig, resolvePath } = require('./config');
-const { createLogger } = require('./logger');
+const { createLogger, getRecentLogs } = require('./logger');
 const { UserStore } = require('./user_store');
 const { createDeviceLeaseStore } = require('./device_lease_store');
 
@@ -476,6 +477,97 @@ function sendMetricsReporterMessage(type, payload) {
     }
     return false;
   }
+}
+
+function snapshotCpuTimes() {
+  const cpus = os.cpus() || [];
+  let idle = 0;
+  let total = 0;
+  cpus.forEach((cpu) => {
+    const times = cpu.times || {};
+    const user = Number(times.user || 0);
+    const nice = Number(times.nice || 0);
+    const sys = Number(times.sys || 0);
+    const irq = Number(times.irq || 0);
+    const idleTime = Number(times.idle || 0);
+    idle += idleTime;
+    total += user + nice + sys + irq + idleTime;
+  });
+  return { idle, total };
+}
+
+function formatBytes(n) {
+  if (!Number.isFinite(n) || n <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let value = n;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  return `${value.toFixed(unitIndex === 0 ? 0 : 2)} ${units[unitIndex]}`;
+}
+
+function safePercent(numerator, denominator) {
+  if (!Number.isFinite(numerator) || !Number.isFinite(denominator) || denominator <= 0) return 0;
+  return Number(((numerator / denominator) * 100).toFixed(2));
+}
+
+let lastResourceCpu = snapshotCpuTimes();
+let lastResourceProcCpuUsage = process.cpuUsage();
+let lastResourceProcSampleAt = Date.now();
+
+function buildSystemResourcesSnapshot() {
+  const currentCpu = snapshotCpuTimes();
+  const totalDelta = currentCpu.total - lastResourceCpu.total;
+  const idleDelta = currentCpu.idle - lastResourceCpu.idle;
+  lastResourceCpu = currentCpu;
+  const cpuUsagePercent = totalDelta > 0 ? Math.max(0, Math.min(100, (1 - idleDelta / totalDelta) * 100)) : 0;
+  const now = Date.now();
+  const elapsedMs = Math.max(1, now - lastResourceProcSampleAt);
+  const procCpuUsage = process.cpuUsage();
+  const procCpuDelta = process.cpuUsage(lastResourceProcCpuUsage);
+  const procCpuMicros = Number(procCpuDelta.user || 0) + Number(procCpuDelta.system || 0);
+  const cpuCores = (os.cpus() || []).length || 1;
+  const processCpuPercentHost = Math.max(
+    0,
+    Math.min(100, Number(((procCpuMicros / 1000) / (elapsedMs * cpuCores) * 100).toFixed(2)))
+  );
+  lastResourceProcCpuUsage = procCpuUsage;
+  lastResourceProcSampleAt = now;
+  const totalMem = os.totalmem();
+  const freeMem = os.freemem();
+  const usedMem = totalMem - freeMem;
+  const processMem = process.memoryUsage();
+  const processMemRssPercentOfTotal = safePercent(processMem.rss, totalMem);
+  const processMemRssPercentOfUsed = safePercent(processMem.rss, usedMem);
+  return {
+    osType: os.type(),
+    osRelease: os.release(),
+    cpuCores,
+    cpuUsagePercent: Number(cpuUsagePercent.toFixed(2)),
+    loadAvg1m: Number((os.loadavg()[0] || 0).toFixed(2)),
+    memory: {
+      totalBytes: totalMem,
+      usedBytes: usedMem,
+      freeBytes: freeMem,
+      usagePercent: totalMem > 0 ? Number(((usedMem / totalMem) * 100).toFixed(2)) : 0,
+      totalText: formatBytes(totalMem),
+      usedText: formatBytes(usedMem),
+      freeText: formatBytes(freeMem)
+    },
+    process: {
+      pid: process.pid,
+      uptimeSec: Math.floor(process.uptime()),
+      cpuPercentOfHost: processCpuPercentHost,
+      rssBytes: processMem.rss,
+      heapUsedBytes: processMem.heapUsed,
+      rssPercentOfTotalMem: processMemRssPercentOfTotal,
+      rssPercentOfUsedMem: processMemRssPercentOfUsed,
+      rssText: formatBytes(processMem.rss),
+      heapUsedText: formatBytes(processMem.heapUsed)
+    }
+  };
 }
 
 setInterval(() => {
@@ -1315,7 +1407,7 @@ async function bootstrap() {
       if (!runningInClusterWorker) {
         const cfgArgv = cfg.__configPath ? ['-c', cfg.__configPath] : [];
         metricsReporterChild = fork(path.resolve(__dirname, 'metrics_reporter.js'), cfgArgv, {
-          stdio: 'inherit',
+          stdio: ['inherit', 'inherit', 'inherit', 'ipc'],
           env: process.env
         });
         metricsReporterChild.on('exit', () => {
@@ -1328,10 +1420,57 @@ async function bootstrap() {
       if (!process.env.NODE_UNIQUE_ID) {
         const cfgArgv = cfg.__configPath ? ['-c', cfg.__configPath] : [];
         adminChild = fork(path.resolve(__dirname, 'admin_entry.js'), cfgArgv, {
-          stdio: 'inherit',
+          stdio: ['inherit', 'inherit', 'inherit', 'ipc'],
           env: {
             ...process.env,
             FOURPX_ADMIN_STANDALONE: '1'
+          }
+        });
+        adminChild.on('message', async (msg) => {
+          if (!msg || typeof msg !== 'object') return;
+          const type = String(msg.type || '');
+          const requestId = String(msg.requestId || '').trim();
+          if (!requestId) return;
+          if (type === 'admin_get_active_device_counts') {
+            const sourceUserIds = Array.isArray(msg.userIds) ? msg.userIds : [];
+            const userIds = sourceUserIds.slice(0, 5000);
+            try {
+              const counts = await deviceLeaseStore.getActiveDeviceCountsByUsers(userIds);
+              if (adminChild && adminChild.connected) {
+                adminChild.send({ type: 'admin_active_device_counts', requestId, counts });
+              }
+            } catch (err) {
+              if (adminChild && adminChild.connected) {
+                adminChild.send({
+                  type: 'admin_active_device_counts',
+                  requestId,
+                  counts: {},
+                  error: String((err && err.message) || err)
+                });
+              }
+            }
+            return;
+          }
+          if (type === 'admin_get_system_resources') {
+            if (adminChild && adminChild.connected) {
+              adminChild.send({
+                type: 'admin_system_resources',
+                requestId,
+                resources: buildSystemResourcesSnapshot()
+              });
+            }
+            return;
+          }
+          if (type === 'admin_get_system_logs') {
+            const limitRaw = Number(msg.limit || 200);
+            const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(1000, Math.floor(limitRaw))) : 200;
+            if (adminChild && adminChild.connected) {
+              adminChild.send({
+                type: 'admin_system_logs',
+                requestId,
+                lines: getRecentLogs(limit)
+              });
+            }
           }
         });
         adminChild.on('exit', () => {

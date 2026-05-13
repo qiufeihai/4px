@@ -48,7 +48,10 @@ jobs:
         if: runner.os == 'macOS'
         working-directory: apps/go/gui
         run: |
-          "$(go env GOPATH)/bin/wails" build
+          VERSION="${{ inputs.version }}"
+          GITSHA="$(git rev-parse --short HEAD)"
+          BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          "$(go env GOPATH)/bin/wails" build -ldflags "-X main.AppVersion=$VERSION -X main.GitSHA=$GITSHA -X main.BuildTime=$BUILT_AT"
 
       - name: Build GUI (Windows)
         if: runner.os == 'Windows'
@@ -56,7 +59,10 @@ jobs:
         shell: pwsh
         run: |
           $wails = "$(go env GOPATH)\bin\wails.exe"
-          & $wails build
+          $version = "${{ inputs.version }}"
+          $gitsha = (git rev-parse --short HEAD).Trim()
+          $builtAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+          & $wails build -ldflags "-X main.AppVersion=$version -X main.GitSHA=$gitsha -X main.BuildTime=$builtAt"
 
       - name: Prepare artifact metadata (macOS)
         if: runner.os == 'macOS'

@@ -89,14 +89,26 @@ private struct LogsView: View {
     let text: String
     let onClear: () -> Void
     @Environment(\.dismiss) private var dismiss
+    
+    private var versionText: String {
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
+        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"
+        return "版本 \(version) (\(build))"
+    }
 
     var body: some View {
         NavigationStack {
             ScrollView {
-                Text(text.isEmpty ? "暂无日志" : text)
-                    .font(.system(size: 12, design: .monospaced))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(12)
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(text.isEmpty ? "暂无日志" : text)
+                        .font(.system(size: 12, design: .monospaced))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Text(versionText)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(12)
             }
             .navigationTitle("运行日志")
             .toolbar {

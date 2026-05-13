@@ -40,8 +40,15 @@ if [[ ! -x "$WAILS_CMD" && "$WAILS_CMD" != "wails" ]]; then
   exit 1
 fi
 
+if git -C "$ROOT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  GITSHA="$(git -C "$ROOT_DIR" rev-parse --short HEAD)"
+else
+  GITSHA="nogit"
+fi
+BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
 echo "Building GUI package..."
-(cd "$ROOT_DIR" && "$WAILS_CMD" build -clean)
+(cd "$ROOT_DIR" && "$WAILS_CMD" build -clean -ldflags "-X main.AppVersion=$VERSION -X main.GitSHA=$GITSHA -X main.BuildTime=$BUILT_AT")
 
 APP_PATH="$(find "$ROOT_DIR/build/bin" -maxdepth 1 -name "*.app" -type d | head -n 1)"
 if [[ -z "$APP_PATH" ]]; then
@@ -55,12 +62,6 @@ case "$ARCH" in
   x86_64) ARCH="amd64" ;;
   aarch64|arm64) ARCH="arm64" ;;
 esac
-
-if git -C "$ROOT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  GITSHA="$(git -C "$ROOT_DIR" rev-parse --short HEAD)"
-else
-  GITSHA="nogit"
-fi
 
 mkdir -p "$RELEASE_DIR"
 ARTIFACT="4px-client_${VERSION}_${PLATFORM}_${ARCH}_${GITSHA}"

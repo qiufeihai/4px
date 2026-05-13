@@ -12,6 +12,10 @@ import (
 //go:embed all:frontend/dist
 var assets embed.FS
 
+var AppVersion = "dev"
+var GitSHA = "nogit"
+var BuildTime = ""
+
 func main() {
 	app := NewApp()
 	err := wails.Run(&options.App{

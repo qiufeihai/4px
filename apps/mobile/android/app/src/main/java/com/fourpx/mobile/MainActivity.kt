@@ -212,9 +212,10 @@ class MainActivity : AppCompatActivity() {
 
     private fun showLogsDialog() {
         val logs = AppLog.dump().ifBlank { getString(R.string.logs_empty) }
+        val versionText = "版本 ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})"
         AlertDialog.Builder(this)
             .setTitle(R.string.logs_title)
-            .setMessage(logs)
+            .setMessage("$logs\n\n$versionText")
             .setPositiveButton(R.string.logs_close, null)
             .setNeutralButton(R.string.logs_clear) { _, _ ->
                 AppLog.clear()

@@ -10,6 +10,9 @@ const logger = createLogger('admin', cfg.logLevel);
 
 let deviceLeaseStore = null;
 let closeDeviceLeaseStore = async () => {};
+let activeDeviceIpcEnabled = false;
+let activeDeviceIpcReqSeq = 1;
+const pendingActiveDeviceIpc = new Map();
 
 function buildUserStore() {
   const usersFilePath = cfg.authUsersFile ? resolvePath(cfg.__configDir, cfg.authUsersFile) : '';
@@ -30,7 +33,12 @@ async function initDeviceLeaseStoreForAdmin() {
   const deviceLeaseStoreCfg = cfg.deviceLeaseStore && typeof cfg.deviceLeaseStore === 'object' ? cfg.deviceLeaseStore : {};
   const mode = String(deviceLeaseStoreCfg.mode || 'memory').trim().toLowerCase() === 'redis' ? 'redis' : 'memory';
   if (mode !== 'redis') {
-    logger.warn('admin activeDevices in memory mode may not reflect data-plane runtime leases');
+    if (typeof process.send === 'function') {
+      activeDeviceIpcEnabled = true;
+      logger.info('admin activeDevices use IPC from data-plane (memory mode)');
+    } else {
+      logger.warn('admin activeDevices in memory mode may not reflect data-plane runtime leases');
+    }
     return;
   }
   const redisCfg = deviceLeaseStoreCfg.redis && typeof deviceLeaseStoreCfg.redis === 'object'
@@ -52,8 +60,50 @@ async function initDeviceLeaseStoreForAdmin() {
 }
 
 async function getUserActiveDeviceStats(userIds = []) {
-  if (!deviceLeaseStore) return {};
-  return deviceLeaseStore.getActiveDeviceCountsByUsers(userIds);
+  if (deviceLeaseStore) {
+    return deviceLeaseStore.getActiveDeviceCountsByUsers(userIds);
+  }
+  if (!activeDeviceIpcEnabled) return {};
+  if (typeof process.send !== 'function') return {};
+  const reqId = `${Date.now()}_${activeDeviceIpcReqSeq++}`;
+  const ids = Array.isArray(userIds) ? userIds.slice(0, 5000) : [];
+  return await new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      pendingActiveDeviceIpc.delete(reqId);
+      resolve({});
+    }, 2000);
+    pendingActiveDeviceIpc.set(reqId, { resolve, timer });
+    process.send({ type: 'admin_get_active_device_counts', requestId: reqId, userIds: ids });
+  });
+}
+
+async function getSystemResourcesSnapshot() {
+  if (!activeDeviceIpcEnabled) return null;
+  if (typeof process.send !== 'function') return null;
+  const reqId = `${Date.now()}_${activeDeviceIpcReqSeq++}`;
+  return await new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      pendingActiveDeviceIpc.delete(reqId);
+      resolve(null);
+    }, 2000);
+    pendingActiveDeviceIpc.set(reqId, { resolve, timer });
+    process.send({ type: 'admin_get_system_resources', requestId: reqId });
+  });
+}
+
+async function getSystemLogs(limit = 200) {
+  if (!activeDeviceIpcEnabled) return null;
+  if (typeof process.send !== 'function') return null;
+  const reqId = `${Date.now()}_${activeDeviceIpcReqSeq++}`;
+  const safeLimit = Number.isFinite(Number(limit)) ? Math.max(1, Math.min(1000, Math.floor(Number(limit)))) : 200;
+  return await new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      pendingActiveDeviceIpc.delete(reqId);
+      resolve(null);
+    }, 2000);
+    pendingActiveDeviceIpc.set(reqId, { resolve, timer });
+    process.send({ type: 'admin_get_system_logs', requestId: reqId, limit: safeLimit });
+  });
 }
 
 async function bootstrap() {
@@ -63,7 +113,7 @@ async function bootstrap() {
   }
   await initDeviceLeaseStoreForAdmin();
   const userStore = buildUserStore();
-  startAdminServer({ cfg, userStore, logger, getUserActiveDeviceStats });
+  startAdminServer({ cfg, userStore, logger, getUserActiveDeviceStats, getSystemResourcesSnapshot, getSystemLogs });
 }
 
 process.on('SIGTERM', async () => {
@@ -74,6 +124,33 @@ process.on('SIGTERM', async () => {
 process.on('SIGINT', async () => {
   await closeDeviceLeaseStore();
   process.exit(0);
+});
+
+process.on('message', (msg) => {
+  if (!msg || typeof msg !== 'object') return;
+  const type = String(msg.type || '');
+  const requestId = String(msg.requestId || '').trim();
+  if (!requestId) return;
+  const pending = pendingActiveDeviceIpc.get(requestId);
+  if (!pending) return;
+  pendingActiveDeviceIpc.delete(requestId);
+  clearTimeout(pending.timer);
+  if (type === 'admin_active_device_counts') {
+    const counts = msg.counts && typeof msg.counts === 'object' ? msg.counts : {};
+    pending.resolve(counts);
+    return;
+  }
+  if (type === 'admin_system_resources') {
+    const resources = msg.resources && typeof msg.resources === 'object' ? msg.resources : null;
+    pending.resolve(resources);
+    return;
+  }
+  if (type === 'admin_system_logs') {
+    const lines = Array.isArray(msg.lines) ? msg.lines : null;
+    pending.resolve(lines);
+    return;
+  }
+  pending.resolve(null);
 });
 
 void bootstrap();

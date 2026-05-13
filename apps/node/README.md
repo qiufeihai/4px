@@ -131,7 +131,7 @@ node bin/4px.js client -c config/client.json
 - `deviceTicket.secret`：设备票据签名密钥（必填，生产请使用高强度随机串）
 - `deviceTicket.ttlMs`：设备票据有效期（毫秒）
 - `deviceTicket.require`：是否要求请求走 `x-device-ticket` 设备票据校验（建议 `true`）
-- `deviceLeaseStore.mode`：设备租约存储模式（`memory` 或 `redis`）
+- `deviceLeaseStore.mode`：设备租约存储模式（`memory` 或 `redis`）；默认 `memory` 仅建议单进程使用，cluster 严格设备限制请使用 `redis`
 - `deviceLeaseStore.bindPeerIp`：设备识别是否绑定客户端源 IP（默认 `true`，防共享 token 伪造）
 - `deviceLeaseStore.prefix`：Redis 模式下设备租约键前缀
 - `deviceLeaseStore.redis.*`：Redis 连接参数（`enabled/url/password/database/connectTimeoutMs`）
@@ -148,7 +148,9 @@ node bin/4px.js client -c config/client.json
 
 说明：
 - 当前代码固定使用高性能默认：入站 socket 强制 `TCP_NODELAY + KeepAlive(30000ms)`；出站优先启用双栈自动建连；目标级短时熔断与伪装页限频始终开启，不再暴露对应开关参数。
-- 若使用 `USE_CLUSTER=1` 且需要严格防作弊，建议启用 `deviceLeaseStore.mode=redis`，避免多 worker 内存状态分裂导致设备上限失真。
+- 注意：若使用 `USE_CLUSTER=1` 且 `deviceLeaseStore.mode=memory`，设备租约只保存在各 worker 自己的内存里，不是全局共享状态。
+- 这会导致两个后果：`activeDevices`/活跃设备数只能反映单个 worker 视角；设备上限判断也可能按单 worker 分别生效，出现全局不一致。
+- 因此，只要你启用 cluster 且要求严格设备数限制、防绕过、管理后台活跃设备数准确，就应改用 `deviceLeaseStore.mode=redis`。
 - 管理端口 `6688` 默认以独立子进程运行，降低对数据面事件循环的影响。
 
 ### `client.json`
@@ -312,6 +314,11 @@ journalctl -u 4px --since "10 min ago" | grep -E "overload|circuit open"
 ## Redis（设备租约，集群防绕过）
 
 当你启用 `USE_CLUSTER=1` 且要求严格设备数限制时，建议将 `deviceLeaseStore.mode` 设为 `redis`。
+
+注意事项：
+- `memory` 模式只适合单进程 server；它的设备租约、活跃设备数、最近触达状态都在当前进程内存中。
+- 一旦启用 cluster，多 worker 之间不会共享这些内存状态；此时管理后台看到的 `activeDevices`、客户端从 `/session/ping` 看到的 `activeDevices`、以及设备限制执行结果，都可能出现全局不一致。
+- 这不是文档层面的“显示问题”而已，而是运行语义限制；若需要严格防作弊/防绕过，必须使用 `redis` 模式。
 
 项目已提供 Redis compose 文件：
 

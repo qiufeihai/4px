@@ -195,6 +195,12 @@ function startAdminServer(options) {
   const getUserActiveDeviceStats = typeof options.getUserActiveDeviceStats === 'function'
     ? options.getUserActiveDeviceStats
     : () => ({});
+  const getSystemResourcesSnapshot = typeof options.getSystemResourcesSnapshot === 'function'
+    ? options.getSystemResourcesSnapshot
+    : null;
+  const getSystemLogs = typeof options.getSystemLogs === 'function'
+    ? options.getSystemLogs
+    : null;
   const admin = cfg.admin || {};
   if (admin.enabled !== true) return;
   if (!userStore || !userStore.enabled) {
@@ -262,32 +268,35 @@ function startAdminServer(options) {
     }
     try {
       if (req.method === 'GET' && url.pathname === '/api/system/resources') {
-        const currentCpu = snapshotCpuTimes();
-        const totalDelta = currentCpu.total - lastCpu.total;
-        const idleDelta = currentCpu.idle - lastCpu.idle;
-        lastCpu = currentCpu;
-        const cpuUsagePercent = totalDelta > 0 ? Math.max(0, Math.min(100, (1 - idleDelta / totalDelta) * 100)) : 0;
-        const now = Date.now();
-        const elapsedMs = Math.max(1, now - lastProcSampleAt);
-        const procCpuUsage = process.cpuUsage();
-        const procCpuDelta = process.cpuUsage(lastProcCpuUsage);
-        const procCpuMicros = Number(procCpuDelta.user || 0) + Number(procCpuDelta.system || 0);
-        const cpuCores = (os.cpus() || []).length || 1;
-        const processCpuPercentHost = Math.max(
-          0,
-          Math.min(100, Number(((procCpuMicros / 1000) / (elapsedMs * cpuCores) * 100).toFixed(2)))
-        );
-        lastProcCpuUsage = procCpuUsage;
-        lastProcSampleAt = now;
-        const totalMem = os.totalmem();
-        const freeMem = os.freemem();
-        const usedMem = totalMem - freeMem;
-        const processMem = process.memoryUsage();
-        const processMemRssPercentOfTotal = safePercent(processMem.rss, totalMem);
-        const processMemRssPercentOfUsed = safePercent(processMem.rss, usedMem);
-        sendJson(res, 200, {
-          ok: true,
-          resources: {
+        let resources;
+        if (getSystemResourcesSnapshot) {
+          resources = await getSystemResourcesSnapshot();
+        }
+        if (!resources) {
+          const currentCpu = snapshotCpuTimes();
+          const totalDelta = currentCpu.total - lastCpu.total;
+          const idleDelta = currentCpu.idle - lastCpu.idle;
+          lastCpu = currentCpu;
+          const cpuUsagePercent = totalDelta > 0 ? Math.max(0, Math.min(100, (1 - idleDelta / totalDelta) * 100)) : 0;
+          const now = Date.now();
+          const elapsedMs = Math.max(1, now - lastProcSampleAt);
+          const procCpuUsage = process.cpuUsage();
+          const procCpuDelta = process.cpuUsage(lastProcCpuUsage);
+          const procCpuMicros = Number(procCpuDelta.user || 0) + Number(procCpuDelta.system || 0);
+          const cpuCores = (os.cpus() || []).length || 1;
+          const processCpuPercentHost = Math.max(
+            0,
+            Math.min(100, Number(((procCpuMicros / 1000) / (elapsedMs * cpuCores) * 100).toFixed(2)))
+          );
+          lastProcCpuUsage = procCpuUsage;
+          lastProcSampleAt = now;
+          const totalMem = os.totalmem();
+          const freeMem = os.freemem();
+          const usedMem = totalMem - freeMem;
+          const processMem = process.memoryUsage();
+          const processMemRssPercentOfTotal = safePercent(processMem.rss, totalMem);
+          const processMemRssPercentOfUsed = safePercent(processMem.rss, usedMem);
+          resources = {
             osType: os.type(),
             osRelease: os.release(),
             cpuCores,
@@ -313,14 +322,24 @@ function startAdminServer(options) {
               rssText: formatBytes(processMem.rss),
               heapUsedText: formatBytes(processMem.heapUsed)
             }
-          }
+          };
+        }
+        sendJson(res, 200, {
+          ok: true,
+          resources
         });
         return;
       }
       if (req.method === 'GET' && url.pathname === '/api/system/logs') {
         const limitRaw = Number(url.searchParams.get('limit') || 200);
         const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(1000, Math.floor(limitRaw))) : 200;
-        const lines = getRecentLogs(limit);
+        let lines;
+        if (getSystemLogs) {
+          lines = await getSystemLogs(limit);
+        }
+        if (!Array.isArray(lines)) {
+          lines = getRecentLogs(limit);
+        }
         sendJson(res, 200, {
           ok: true,
           lines,
