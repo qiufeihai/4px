@@ -18,6 +18,7 @@
     <string name="status_disconnected">状态：已断开</string>
     <string name="status_error">状态：错误 - %1$s</string>
     <string name="status_vpn_permission_required">状态：等待 VPN 授权</string>
+    <string name="status_vpn_starting">状态：VPN 启动中，等待数据面就绪</string>
     <string name="status_vpn_started">状态：VPN 已启动</string>
     <string name="expiry_unknown">有效期：未获取</string>
     <string name="expiry_unlimited">有效期：长期有效</string>
@@ -30,6 +31,7 @@
     <string name="error_invalid_port">端口范围必须为 1-65535</string>
     <string name="error_invalid_token">请输入授权令牌</string>
     <string name="error_unknown">未知错误，请查看日志</string>
+    <string name="error_vpn_data_plane_not_ready">VPN 数据面未就绪，请查看日志</string>
     <string name="error_bridge_unavailable">Go 桥接不可用，请确认 AAR 已加载</string>
     <string name="error_cert_hostname">证书域名校验失败，请使用证书匹配的域名</string>
     <string name="error_cert_verify">证书校验失败，请检查证书配置</string>
@@ -37,6 +39,14 @@
     <string name="error_timeout">连接超时，请检查网络或服务端状态</string>
     <string name="error_conn_refused">连接被拒绝，请检查服务端地址和端口</string>
     <string name="error_token_expired">令牌已过期，请更新授权令牌</string>
+    <string name="error_user_expired">账号已过期，请联系管理员续期</string>
+    <string name="error_user_disabled">账号已被禁用，请联系管理员启用</string>
+    <string name="error_missing_token">未填写授权令牌，请检查客户端配置</string>
+    <string name="error_device_ticket_invalid">设备身份已失效，请断开后重新连接</string>
+    <string name="error_path_not_found">客户端与服务端接口不匹配，请升级到兼容版本</string>
+    <string name="error_bad_request">请求格式错误，请检查客户端配置或版本</string>
+    <string name="error_bad_gateway">目标站点不可达或解析失败，请稍后重试</string>
+    <string name="error_service_overloaded">服务端当前过载或暂时不可用，请稍后重试</string>
     <string name="error_auth_failed">授权失败，请检查授权令牌</string>
     <string name="error_device_limit">设备数已达上限，请先断开其它设备</string>
     <string name="error_forbidden">访问被拒绝，请检查权限配置</string>

@@ -61,10 +61,17 @@ class FourPxVpnService : VpnService() {
         } catch (_: PackageManager.NameNotFoundException) {
         }
 
-        val established = builder.establish() ?: return
+        val established = builder.establish()
+        if (established == null) {
+            Log.e(TAG, "builder.establish returned null")
+            AppLog.e(TAG, "vpn establish failed: builder returned null")
+            stopSelf()
+            return
+        }
         // Detach FD ownership before passing into Go runtime to avoid fdsan double-close crashes.
         val tunFd = established.detachFd()
         vpnInterface = null
+        AppLog.i(TAG, "vpn established tunFd=$tunFd proxy=$socksHost:$socksPort")
         startForeground(NOTIFICATION_ID, buildNotification())
         val proxy = "socks5://$socksHost:$socksPort"
         val started = startTun2SocksBridge(tunFd, proxy, configJson)

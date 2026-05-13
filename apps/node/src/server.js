@@ -1113,7 +1113,8 @@ server.on('stream', async (stream, headers) => {
         `reject device limit exceeded, trace_id=${traceId}, peer=${remotePeer}, stream=${streamId}, path=${reqPath}, user=${authUser.username}, active_devices=${leaseResult.activeDevices}, max_devices=${leaseResult.maxDevices}, policy=${deviceLimitPolicy}, identity=${deviceIdentity.source}, err_class=non-retryable`
       );
       stream.respond(getAuthResponseHeaders(409, {
-        'content-type': 'application/json; charset=utf-8'
+        'content-type': 'application/json; charset=utf-8',
+        'x-auth-reason': 'device_limit_exceeded'
       }));
       stream.end(JSON.stringify({
         ok: false,

@@ -157,9 +157,10 @@ class MainActivity : AppCompatActivity() {
                     tunbridgeConfigJson = buildTunbridgeConfigJson(runningConfig)
                 )
                 AppLog.i("main", "connect success ticket_updated=${runningConfig.deviceTicket.isNotBlank()}")
-                statusText.text = getString(R.string.status_vpn_started)
+                statusText.text = getString(R.string.status_vpn_starting)
                 refreshExpiryStatus(runningConfig, silent = true)
                 setState(UiState.CONNECTED)
+                verifyVpnDataPlaneAsync()
             }
         }
     }
@@ -289,6 +290,28 @@ class MainActivity : AppCompatActivity() {
         return ApiResult(false, "go bridge not available")
     }
 
+    private fun verifyVpnDataPlaneAsync() {
+        ioExecutor.execute {
+            try {
+                Thread.sleep(1200)
+            } catch (_: InterruptedException) {
+                return@execute
+            }
+            val stats = fetchBridgeStatsViaGoBridge()
+            runOnUiThread {
+                if (stats.running) {
+                    AppLog.i("main", "vpn data plane ready proxy=${stats.proxy} mtu=${stats.mtu} log=${stats.logLevel}")
+                    statusText.text = getString(R.string.status_vpn_started)
+                    return@runOnUiThread
+                }
+                val rawError = stats.lastError.ifBlank { getString(R.string.error_vpn_data_plane_not_ready) }
+                AppLog.e("main", "vpn data plane not ready error=$rawError")
+                showError(rawError)
+                setState(UiState.IDLE)
+            }
+        }
+    }
+
     private fun fetchSessionStatusViaGoBridge(config: AppConfig): SessionStatusResult {
         val cfgJson = buildTunbridgeConfigJson(config)
         val bridgePayload = invokeTunbridgeRawJsonMethod(
@@ -296,6 +319,31 @@ class MainActivity : AppCompatActivity() {
             arg = cfgJson
         ) ?: return SessionStatusResult(false, "go bridge not available")
         return parseSessionStatusResult(bridgePayload)
+    }
+
+    private fun fetchBridgeStatsViaGoBridge(): BridgeStatsResult {
+        val payload = invokeTunbridgeRawNoArgMethod(
+            candidates = listOf("GetStats", "getStats")
+        ) ?: return BridgeStatsResult(
+            running = false,
+            lastError = "go bridge stats unavailable"
+        )
+        return try {
+            val obj = JSONObject(payload)
+            BridgeStatsResult(
+                running = obj.optBoolean("running", false),
+                lastError = obj.optString("lastError", "").trim(),
+                proxy = obj.optString("proxy", "").trim(),
+                mtu = obj.optInt("mtu", 0),
+                logLevel = obj.optString("logLevel", "").trim()
+            )
+        } catch (err: Exception) {
+            AppLog.e("main", "invalid bridge stats result: ${err.message}")
+            BridgeStatsResult(
+                running = false,
+                lastError = err.message ?: "invalid bridge stats result"
+            )
+        }
     }
 
     private fun invokeTunbridgeJsonMethod(candidates: List<String>, arg: String): ApiResult? {
@@ -311,6 +359,7 @@ class MainActivity : AppCompatActivity() {
                 val method = resolveBridgeMethod(cls, candidates) ?: continue
                 val ret = method.invoke(null, arg)
                 if (ret !is String) {
+                    AppLog.e("main", "bridge method ${method.name} in $className returned non-string")
                     return null
                 }
                 return ret
@@ -318,8 +367,35 @@ class MainActivity : AppCompatActivity() {
                 continue
             } catch (_: NoSuchMethodException) {
                 continue
-            } catch (_: Exception) {
+            } catch (err: Exception) {
+                AppLog.e("main", "bridge call failed in $className: ${err.message}")
+                return null
+            }
+        }
+        return null
+    }
+
+    private fun invokeTunbridgeRawNoArgMethod(candidates: List<String>): String? {
+        val bridgeClasses = listOf("go.tunbridge.Tunbridge", "tunbridge.Tunbridge")
+        for (className in bridgeClasses) {
+            try {
+                val cls = Class.forName(className)
+                val method = cls.methods.firstOrNull { m ->
+                    candidates.contains(m.name) && m.parameterTypes.isEmpty()
+                } ?: continue
+                val ret = method.invoke(null)
+                if (ret !is String) {
+                    AppLog.e("main", "bridge method ${method.name} in $className returned non-string")
+                    return null
+                }
+                return ret
+            } catch (_: ClassNotFoundException) {
                 continue
+            } catch (_: NoSuchMethodException) {
+                continue
+            } catch (err: Exception) {
+                AppLog.e("main", "bridge no-arg call failed in $className: ${err.message}")
+                return null
             }
         }
         return null
@@ -413,6 +489,25 @@ class MainActivity : AppCompatActivity() {
         if (lower.contains("go bridge not available")) {
             return getString(R.string.error_bridge_unavailable)
         }
+        if (
+            lower.contains("device_limit_exceeded") ||
+            authReason?.contains("device_limit") == true ||
+            authReason?.contains("device") == true
+        ) {
+            return getString(R.string.error_device_limit)
+        }
+        if (authReason == "invalid_device_ticket" || authReason == "expired_or_invalid" || authReason == "user_mismatch") {
+            return getString(R.string.error_device_ticket_invalid)
+        }
+        if (authReason == "missing_token") {
+            return getString(R.string.error_missing_token)
+        }
+        if (authReason == "disabled_user") {
+            return getString(R.string.error_user_disabled)
+        }
+        if (authReason == "expired_user") {
+            return getString(R.string.error_user_expired)
+        }
         if (lower.contains("hostname") && lower.contains("not verified")) {
             return getString(R.string.error_cert_hostname)
         }
@@ -435,6 +530,12 @@ class MainActivity : AppCompatActivity() {
                 else -> getString(R.string.error_auth_failed)
             }
         }
+        if (lower.contains("status=404")) {
+            return getString(R.string.error_path_not_found)
+        }
+        if (lower.contains("status=400")) {
+            return getString(R.string.error_bad_request)
+        }
         if (lower.contains("status=403")) {
             return when {
                 authReason?.contains("device_limit") == true -> getString(R.string.error_device_limit)
@@ -444,6 +545,12 @@ class MainActivity : AppCompatActivity() {
         }
         if (lower.contains("status=429")) {
             return getString(R.string.error_rate_limited)
+        }
+        if (lower.contains("status=502")) {
+            return getString(R.string.error_bad_gateway)
+        }
+        if (lower.contains("status=503")) {
+            return getString(R.string.error_service_overloaded)
         }
         if (Regex("status=5\\d\\d").containsMatchIn(lower)) {
             return getString(R.string.error_server_unavailable)
@@ -464,4 +571,12 @@ data class SessionStatusResult(
     val expireAt: String = "",
     val remainingDays: Int = -1,
     val expired: Boolean = false
+)
+
+data class BridgeStatsResult(
+    val running: Boolean,
+    val lastError: String = "",
+    val proxy: String = "",
+    val mtu: Int = 0,
+    val logLevel: String = ""
 )

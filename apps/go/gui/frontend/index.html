@@ -602,11 +602,35 @@
       for (let i = arr.length - 1; i >= 0; i -= 1) {
         const line = String(arr[i] || "");
         if (!line) continue;
+        if (/invalid_device_ticket|auth_reason=invalid_device_ticket|auth_reason=expired_or_invalid|auth_reason=user_mismatch/i.test(line)) {
+          return "设备身份已失效：请断开后重新连接，必要时检查网络环境是否变化。";
+        }
+        if (/missing_token|auth_reason=missing_token/i.test(line)) {
+          return "未填写授权令牌：请检查客户端配置中的 auth_token。";
+        }
+        if (/device_limit_exceeded|auth_reason=device_limit_exceeded|status=409/i.test(line)) {
+          return "设备数已达上限：请先断开其它设备后再重试。";
+        }
         if (/expired_user|auth_reason=expired_user|upstream status=401 auth_reason=expired_user/i.test(line)) {
           return "账号已过期：请在管理后台延长该用户有效期，或更换为未过期 token。";
         }
         if (/disabled_user|auth_reason=disabled_user|upstream status=401 auth_reason=disabled_user/i.test(line)) {
           return "账号已被禁用：请在管理后台启用该用户，或更换为可用 token。";
+        }
+        if (/status=429|too many requests/i.test(line)) {
+          return "请求过于频繁：请稍后重试。";
+        }
+        if (/status=404/i.test(line)) {
+          return "客户端与服务端接口不匹配：请升级到兼容版本。";
+        }
+        if (/status=400/i.test(line)) {
+          return "请求格式错误：请检查客户端配置或版本是否正确。";
+        }
+        if (/status=502/i.test(line)) {
+          return "目标站点不可达或解析失败：请稍后重试，或检查服务端出口网络。";
+        }
+        if (/status=503|circuit open|overload/i.test(line)) {
+          return "服务端当前过载或暂时不可用：请稍后重试。";
         }
         if (
           /status=401|status=403|unauthorized|forbidden|invalid_token/i.test(line)
