@@ -99,6 +99,7 @@ go run ./cmd/4px -c config/client.json sysproxy-status
 - `upstream_h2_ping_timeout_ms`：HTTP/2 ping 超时
 - `session_heartbeat_interval_ms`：会话心跳间隔（毫秒，默认 30000，最小 5000）
 - `device_ticket`：设备票据缓存（自动维护，通常无需手填）
+- `device_id`：终端稳定标识（自动维护，用于设备数限制；通常无需手填）
 - `log_level`：日志等级（`DEBUG/INFO/WARN/ERROR`）
 
 ## 模式说明

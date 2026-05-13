@@ -71,6 +71,7 @@ docs/          # 运维/发布/性能文档
 - GUI：`apps/go/gui/README.md`
 - 移动端：`apps/mobile/README.md`
 - 运维速查：`docs/ops-quick-reference.md`
+- 设备注册 TODO：`docs/device-registration-plan.md`
 - GUI 发布：`docs/release-gui.md`
 - 性能记录：`docs/performance-todo.md`
 - 版本号与变更日志：`docs/versioning.md`

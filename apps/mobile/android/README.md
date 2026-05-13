@@ -5,7 +5,7 @@
 ## 当前实现状态
 
 - Android 客户端已改为仅保留 Go 一套协议逻辑（通过 `gomobile` 暴露 `tunbridge`）。
-- 页面仅保留生产必要配置项：`host`、`port`、`auth token`（`device_ticket` 自动维护）。
+- 页面仅保留生产必要配置项：`host`、`port`、`auth token`（`device_ticket` 与稳定 `device_id` 自动维护）。
 - 连接流程：调用 Go bridge 的 `ConnectProbe` 成功后启动 `VpnService`。
 - 断开流程：调用 Go bridge 的 `Offline`，并停止 `VpnService`。
 - 数据面：`VpnService` + `tunbridge.Start/Stop` + `tun2socks` 转发。

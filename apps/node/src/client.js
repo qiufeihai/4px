@@ -2,12 +2,14 @@ const fs = require('fs');
 const net = require('net');
 const path = require('path');
 const http2 = require('http2');
+const crypto = require('crypto');
 const { monitorEventLoopDelay } = require('perf_hooks');
 const { loadConfig, resolvePath } = require('./config');
 const { createLogger } = require('./logger');
 const { createSocks5Server } = require('./socks5');
 
-const cfg = loadConfig(path.resolve(__dirname, '../config/client.json'));
+const configPath = path.resolve(__dirname, '../config/client.json');
+const cfg = loadConfig(configPath);
 const logger = createLogger('client', cfg.logLevel);
 const upstreamConnectTimeoutMs = cfg.upstreamConnectTimeoutMs || cfg.connectTimeoutMs || 10000;
 const streamResponseTimeoutMs = cfg.streamResponseTimeoutMs || cfg.requestTimeoutMs || 30000;
@@ -23,6 +25,7 @@ const h2SessionPoolSize = Math.max(1, cfg.h2SessionPoolSize || 1);
 const socksListenBacklog = cfg.socksListenBacklog || 4096;
 const upstreamAuthToken = String((cfg.upstream && cfg.upstream.authToken) || '').trim();
 let upstreamDeviceTicket = String((cfg.upstream && cfg.upstream.deviceTicket) || '').trim();
+const upstreamDeviceID = readOrCreateDeviceId(configPath);
 // Keep runtime behavior stable: this build is proxy-only.
 const upstreamPath = '/proxy';
 
@@ -85,6 +88,28 @@ function pickPoolIndex() {
   const index = rrIndex % h2SessionPoolSize;
   rrIndex += 1;
   return index;
+}
+
+function deviceIdSidecarPath(filePath) {
+  const base = path.basename(filePath);
+  return path.join(path.dirname(filePath), `.${base}.device_id`);
+}
+
+function readOrCreateDeviceId(filePath) {
+  const explicit = String((cfg.upstream && cfg.upstream.deviceId) || '').trim();
+  if (explicit) return explicit;
+  const sidecar = deviceIdSidecarPath(filePath);
+  try {
+    const existing = String(fs.readFileSync(sidecar, 'utf8') || '').trim();
+    if (existing) return existing;
+  } catch (_) {
+  }
+  const generated = `node-${crypto.randomUUID()}`;
+  try {
+    fs.writeFileSync(sidecar, `${generated}\n`, { mode: 0o600 });
+  } catch (_) {
+  }
+  return generated;
 }
 
 function getH2Session(poolIndex) {
@@ -156,6 +181,7 @@ async function openProxyStream(targetHost, targetPort) {
       ':method': 'POST',
       ':path': upstreamPath,
       'x-auth-token': upstreamAuthToken,
+      'x-device-id': upstreamDeviceID,
       'x-target-host': targetHost,
       'x-target-port': String(targetPort)
     };
@@ -232,6 +258,7 @@ async function sendOfflineSignal() {
     ':method': 'POST',
     ':path': '/session/offline',
     'x-auth-token': upstreamAuthToken,
+    'x-device-id': upstreamDeviceID,
     'x-device-ticket': ticket
   };
   const stream = session.request(reqHeaders);
@@ -262,7 +289,8 @@ async function sendSessionPing() {
   const reqHeaders = {
     ':method': 'POST',
     ':path': '/session/ping',
-    'x-auth-token': upstreamAuthToken
+    'x-auth-token': upstreamAuthToken,
+    'x-device-id': upstreamDeviceID
   };
   const ticket = String(upstreamDeviceTicket || '').trim();
   if (ticket) {

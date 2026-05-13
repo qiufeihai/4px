@@ -12,6 +12,8 @@
 - 修复 Android 在部分构建环境下依赖 `BuildConfig` 读取版本号导致 release Kotlin 编译失败的问题
 - 修复 Android 与桌面 GUI 在设备数超限、设备票据失效等场景下提示不准确或缺失的问题
 - 改进 Android VPN 启动失败与 bridge 调用失败的日志可见性，便于排查“连接成功但无法联网”
+- 修复 Android VPN 已连接但浏览器无法访问域名地址的问题：为共享 `clientcore` 的本地 SOCKS5 增加 DNS 所需的 `UDP ASSOCIATE` 支持；同时改善桌面 GUI 搭配 ZeroOmega 等 SOCKS5 客户端时的 DNS 兼容性
+- 修复安卓与桌面 GUI 在同一出口网络下可能被服务端合并识别为同一设备、从而无法正确触发“最大设备数”限制的问题；客户端现为每台终端自动维护稳定 `device_id`，且旧版未携带 `x-device-id` 的客户端不再兼容
 
 ### Removed
 

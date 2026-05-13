@@ -55,21 +55,19 @@ const defaultMaxDevices = Math.max(1, Math.floor(Number(cfg.defaultMaxDevices ||
 const deviceLeaseTtlMs = Math.max(5000, Math.floor(Number(cfg.deviceLeaseTtlMs || 90000)));
 const deviceLimitPolicy = String(cfg.deviceLimitPolicy || 'reject').trim().toLowerCase() === 'kick_oldest' ? 'kick_oldest' : 'reject';
 const deviceTicketCfg = cfg.deviceTicket && typeof cfg.deviceTicket === 'object' ? cfg.deviceTicket : {};
+const deviceIdHeader = 'x-device-id';
 const deviceTicketHeader = 'x-device-ticket';
-const deviceTicketEnabled = deviceTicketCfg.enabled !== false;
 const deviceTicketSecret = String(deviceTicketCfg.secret || '').trim();
 const deviceTicketTtlMs = Math.max(
   60000,
   Math.floor(Number(deviceTicketCfg.ttlMs || Math.max(deviceLeaseTtlMs * 4, 300000)))
 );
-const deviceTicketRequire = deviceTicketCfg.require === true;
 const deviceLeaseStoreCfg = cfg.deviceLeaseStore && typeof cfg.deviceLeaseStore === 'object' ? cfg.deviceLeaseStore : {};
 const deviceLeaseStoreMode = String(
   deviceLeaseStoreCfg.mode || (deviceLeaseStoreCfg.redis && deviceLeaseStoreCfg.redis.enabled === true ? 'redis' : 'memory')
 ).trim().toLowerCase() === 'redis'
   ? 'redis'
   : 'memory';
-const deviceLeaseBindPeerIp = deviceLeaseStoreCfg.bindPeerIp !== false;
 const deviceLeaseTouchMinIntervalMs = Math.max(
   0,
   Math.floor(Number(cfg.deviceLeaseTouchMinIntervalMs || (deviceLeaseStoreMode === 'redis' ? 5000 : 0)))
@@ -714,13 +712,14 @@ function signDeviceTicketPayload(payloadText) {
   return crypto.createHmac('sha256', deviceTicketSecret).update(payloadText).digest('base64url');
 }
 
-function peerBindingValue(remoteIp) {
-  if (!deviceLeaseBindPeerIp) return '';
-  return hashText(normalizeRemoteIp(remoteIp), 16);
+function normalizeClientDeviceId(headers) {
+  const raw = String(headers && headers[deviceIdHeader] ? headers[deviceIdHeader] : '').trim();
+  if (!raw || raw.length > 128) return '';
+  if (!/^[A-Za-z0-9._:-]+$/.test(raw)) return '';
+  return raw.toLowerCase();
 }
 
-function issueDeviceTicket(userId, deviceId, remoteIp) {
-  if (!deviceTicketEnabled || !deviceTicketSecret) return '';
+function issueDeviceTicket(userId, deviceId) {
   const nowSec = Math.floor(Date.now() / 1000);
   const expSec = nowSec + Math.max(60, Math.floor(deviceTicketTtlMs / 1000));
   const payload = {
@@ -730,17 +729,15 @@ function issueDeviceTicket(userId, deviceId, remoteIp) {
     iat: nowSec,
     exp: expSec
   };
-  const binding = peerBindingValue(remoteIp);
-  if (binding) payload.pb = binding;
   const payloadText = JSON.stringify(payload);
   const encodedPayload = encodeBase64Url(payloadText);
   const signature = signDeviceTicketPayload(encodedPayload);
   return `${encodedPayload}.${signature}`;
 }
 
-function verifyDeviceTicket(ticketText, userId, remoteIp) {
+function verifyDeviceTicket(ticketText, userId) {
   const token = String(ticketText || '').trim();
-  if (!token || !deviceTicketEnabled || !deviceTicketSecret) {
+  if (!token || !deviceTicketSecret) {
     return { ok: false, reason: 'empty' };
   }
   const dot = token.lastIndexOf('.');
@@ -771,32 +768,26 @@ function verifyDeviceTicket(ticketText, userId, remoteIp) {
   if (uid !== String(userId || '')) {
     return { ok: false, reason: 'user_mismatch' };
   }
-  const expectedBinding = peerBindingValue(remoteIp);
-  const actualBinding = String(payload && payload.pb ? payload.pb : '');
-  if (expectedBinding && actualBinding !== expectedBinding) {
-    return { ok: false, reason: 'peer_mismatch' };
-  }
   return { ok: true, deviceId: did };
 }
 
-function buildDeviceLeaseKey(deviceId, remoteIp) {
-  const parts = [String(deviceId || '').trim() || 'legacy'];
-  if (deviceLeaseBindPeerIp) {
-    parts.push(`ip=${normalizeRemoteIp(remoteIp)}`);
-  }
-  const text = parts.join('|');
+function buildDeviceLeaseKey(deviceId) {
+  const text = String(deviceId || '').trim();
   return hashText(text, 32);
 }
 
-function resolveDeviceIdentity(authUser, headers, remoteIp, options = {}) {
-  const allowBootstrap = options.allowBootstrap !== false;
+function resolveDeviceIdentity(authUser, headers) {
   const userId = String(authUser && authUser.id ? authUser.id : '').trim();
   if (!userId) {
     return { ok: false, reason: 'empty_user_id' };
   }
+  const clientDeviceId = normalizeClientDeviceId(headers);
+  if (!clientDeviceId) {
+    return { ok: false, reason: 'missing_device_id' };
+  }
   const incomingTicket = String(headers && headers[deviceTicketHeader] ? headers[deviceTicketHeader] : '').trim();
   if (incomingTicket) {
-    const verified = verifyDeviceTicket(incomingTicket, userId, remoteIp);
+    const verified = verifyDeviceTicket(incomingTicket, userId);
     if (verified.ok) {
       return {
         ok: true,
@@ -805,37 +796,24 @@ function resolveDeviceIdentity(authUser, headers, remoteIp, options = {}) {
         nextTicket: ''
       };
     }
-    if (deviceTicketRequire && allowBootstrap) {
-      const bindValue = peerBindingValue(remoteIp);
-      const seed = `${userId}|${bindValue || 'no-bind'}`;
-      const deviceId = `bootstrap-${hashText(seed, 24)}`;
-      const nextTicket = issueDeviceTicket(userId, deviceId, remoteIp);
-      return {
-        ok: true,
-        source: 'bootstrap',
-        deviceId,
-        nextTicket
-      };
-    }
-    return { ok: false, reason: `invalid_ticket_${verified.reason}` };
-  }
-
-  if (deviceTicketRequire && allowBootstrap) {
-    const bindValue = peerBindingValue(remoteIp);
-    const seed = `${userId}|${bindValue || 'no-bind'}`;
-    const deviceId = `bootstrap-${hashText(seed, 24)}`;
-    const nextTicket = issueDeviceTicket(userId, deviceId, remoteIp);
+    const deviceId = `client-${hashText(`client|${clientDeviceId}`, 24)}`;
+    const nextTicket = issueDeviceTicket(userId, deviceId);
     return {
       ok: true,
-      source: 'bootstrap',
+      source: 'client_device_id',
       deviceId,
       nextTicket
     };
   }
-  if (!incomingTicket) {
-    return { ok: false, reason: 'missing_ticket' };
-  }
-  return { ok: false, reason: 'missing_ticket' };
+
+  const deviceId = `client-${hashText(`client|${clientDeviceId}`, 24)}`;
+  const nextTicket = issueDeviceTicket(userId, deviceId);
+  return {
+    ok: true,
+    source: 'client_device_id',
+    deviceId,
+    nextTicket
+  };
 }
 
 function calcMaxDevices(authUser) {
@@ -1073,25 +1051,23 @@ server.on('stream', async (stream, headers) => {
       }));
       return;
     }
-    const remoteIp = normalizeRemoteIp(stream.session && stream.session.socket && stream.session.socket.remoteAddress);
-    const deviceIdentity = resolveDeviceIdentity(authUser, headers, remoteIp, {
-      allowBootstrap: !isSessionOffline
-    });
+    const deviceIdentity = resolveDeviceIdentity(authUser, headers);
     if (!deviceIdentity.ok) {
       stats.authRejectedTotal += 1;
       markServerError('non-retryable');
       logger.warn(
         `reject invalid device identity, trace_id=${traceId}, peer=${remotePeer}, stream=${streamId}, path=${reqPath}, user=${authUser.username}, reason=${deviceIdentity.reason}, err_class=non-retryable`
       );
+      const authReason = deviceIdentity.reason === 'missing_device_id' ? 'missing_device_id' : 'invalid_device_ticket';
       stream.respond({
         ':status': 401,
-        'x-auth-reason': 'invalid_device_ticket'
+        'x-auth-reason': authReason
       });
       stream.end();
       return;
     }
     deviceTicket = deviceIdentity.nextTicket || '';
-    deviceLeaseKey = buildDeviceLeaseKey(deviceIdentity.deviceId, remoteIp);
+    deviceLeaseKey = buildDeviceLeaseKey(deviceIdentity.deviceId);
     if (isSessionOffline) {
       await releaseDeviceLease(authUser, deviceLeaseKey);
       stream.respond(getAuthResponseHeaders(200, {
@@ -1370,8 +1346,11 @@ server.on('stream', async (stream, headers) => {
 });
 
 async function initDeviceLeaseStore() {
-  if (deviceTicketEnabled && !deviceTicketSecret) {
-    throw new Error('deviceTicket.secret is required when deviceTicket.enabled=true');
+  if (deviceTicketCfg.enabled === false) {
+    throw new Error('deviceTicket.enabled=false is no longer supported');
+  }
+  if (!deviceTicketSecret) {
+    throw new Error('deviceTicket.secret is required');
   }
   const redisCfg = deviceLeaseStoreCfg.redis && typeof deviceLeaseStoreCfg.redis === 'object'
     ? deviceLeaseStoreCfg.redis

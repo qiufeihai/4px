@@ -14,14 +14,11 @@
   "deviceLeaseTtlMs": 90000,
   "deviceLimitPolicy": "reject",
   "deviceTicket": {
-    "enabled": true,
     "secret": "CHANGE_ME_DEVICE_TICKET_SECRET",
-    "ttlMs": 3600000,
-    "require": true
+    "ttlMs": 3600000
   },
   "deviceLeaseStore": {
     "mode": "redis",
-    "bindPeerIp": true,
     "prefix": "4px:device_lease",
     "redis": {
       "enabled": false,

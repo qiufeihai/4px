@@ -41,6 +41,7 @@ type Config struct {
 	AuthToken          string `json:"authToken"`
 	RejectUnauthorized bool   `json:"rejectUnauthorized"`
 	ServerName         string `json:"serverName"`
+	DeviceID           string `json:"deviceId"`
 	DeviceTicket       string `json:"deviceTicket"`
 	TunFD              int    `json:"tunFd"`
 }
@@ -100,6 +101,7 @@ func runEmbeddedProxyLocked(cfg Config) error {
 		AuthToken:          cfg.AuthToken,
 		RejectUnauthorized: cfg.RejectUnauthorized,
 		CAFile:             "",
+		DeviceID:           cfg.DeviceID,
 		DeviceTicket:       cfg.DeviceTicket,
 		LogLevel:           "WARN",
 	}
@@ -304,6 +306,7 @@ func ConnectProbe(configJSON string) string {
 		AuthToken:                cfg.AuthToken,
 		RejectUnauthorized:       cfg.RejectUnauthorized,
 		CAFile:                   "",
+		DeviceID:                 cfg.DeviceID,
 		DeviceTicket:             cfg.DeviceTicket,
 		UpstreamConnectTimeoutMS: 15000,
 		ResponseHeaderTimeoutMS:  10000,
@@ -356,6 +359,7 @@ func Offline(configJSON string) string {
 		AuthToken:                cfg.AuthToken,
 		RejectUnauthorized:       cfg.RejectUnauthorized,
 		CAFile:                   "",
+		DeviceID:                 cfg.DeviceID,
 		DeviceTicket:             cfg.DeviceTicket,
 		UpstreamConnectTimeoutMS: 15000,
 		ResponseHeaderTimeoutMS:  10000,
@@ -408,6 +412,7 @@ func SessionStatus(configJSON string) string {
 		AuthToken:                cfg.AuthToken,
 		RejectUnauthorized:       cfg.RejectUnauthorized,
 		CAFile:                   "",
+		DeviceID:                 cfg.DeviceID,
 		DeviceTicket:             cfg.DeviceTicket,
 		UpstreamConnectTimeoutMS: 15000,
 		ResponseHeaderTimeoutMS:  10000,

@@ -104,6 +104,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun readConfigFromInputs(): AppConfig? {
+        val storedConfig = configStore.load()
         val host = hostInput.text?.toString()?.trim().orEmpty()
         if (host.isEmpty()) {
             showError(getString(R.string.error_invalid_host))
@@ -123,7 +124,8 @@ class MainActivity : AppCompatActivity() {
             host = host,
             port = port,
             authToken = token,
-            deviceTicket = configStore.load().deviceTicket
+            deviceId = storedConfig.deviceId,
+            deviceTicket = storedConfig.deviceTicket
         )
     }
 
@@ -241,6 +243,7 @@ class MainActivity : AppCompatActivity() {
             .put("upstreamHost", resolvedHost)
             .put("upstreamPort", config.port)
             .put("authToken", config.authToken)
+            .put("deviceId", config.deviceId)
             .put("deviceTicket", config.deviceTicket)
             .put("rejectUnauthorized", true)
             .put("serverName", config.host)

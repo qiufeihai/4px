@@ -32,7 +32,7 @@
 ## 模式说明
 
 - 默认模板使用 `upstream_path=/proxy`（稳定优先模式）。
-- `clientcore` 会自动维护 `device_ticket`，无需手工干预。
+- `clientcore` 会自动维护 `device_ticket` 与稳定 `device_id`，无需手工干预。
 
 ## 本地运行（开发）
 

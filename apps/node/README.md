@@ -127,12 +127,10 @@ node bin/4px.js client -c config/client.json
 - `remoteKeepAliveInitialDelayMs`：目标连接 KeepAlive 初始延迟
 - `streamIdleTimeoutMs`：H2 stream 空闲超时（`0` 表示关闭）
 - `defaultMaxDevices` / `deviceLeaseTtlMs` / `deviceLimitPolicy`：设备数限制策略
-- `deviceTicket.enabled`：是否启用服务端签发设备票据（默认 `true`）
 - `deviceTicket.secret`：设备票据签名密钥（必填，生产请使用高强度随机串）
 - `deviceTicket.ttlMs`：设备票据有效期（毫秒）
-- `deviceTicket.require`：是否要求请求走 `x-device-ticket` 设备票据校验（建议 `true`）
+- `deviceTicket`：当前为固定启用且固定要求；所有客户端必须携带 `x-device-id`，运行后由服务端签发并刷新 `x-device-ticket`
 - `deviceLeaseStore.mode`：设备租约存储模式（`memory` 或 `redis`）；默认 `memory` 仅建议单进程使用，cluster 严格设备限制请使用 `redis`
-- `deviceLeaseStore.bindPeerIp`：设备识别是否绑定客户端源 IP（默认 `true`，防共享 token 伪造）
 - `deviceLeaseStore.prefix`：Redis 模式下设备租约键前缀
 - `deviceLeaseStore.redis.*`：Redis 连接参数（`enabled/url/password/database/connectTimeoutMs`）
 - `deviceLeaseTouchMinIntervalMs`：同设备租约最小触达间隔（默认 `5000ms`，仅在 Redis 模式用于降低每请求 `eval` 频率）
@@ -161,6 +159,7 @@ node bin/4px.js client -c config/client.json
 - `upstream.path`：历史兼容字段；当前运行时固定走 `/proxy`
 - `upstream.serverName` / `upstream.authToken` / `upstream.rejectUnauthorized` / `upstream.caFile`：TLS 与鉴权参数
 - `upstream.deviceTicket`：设备票据（可留空；client 会在收到服务端返回后自动更新内存态）
+- `upstream.deviceId`：可选的稳定终端标识；如未填写，当前 client 会在配置目录自动生成并持久化。服务端现要求所有客户端必须携带 `x-device-id`，旧版不再兼容
 - `sessionHeartbeatIntervalMs`：会话心跳周期（毫秒，默认 `30000`，最小 `5000`）
 - `localAuth.enabled` / `localAuth.username` / `localAuth.password`：本地 SOCKS5 认证
 - `logLevel` / `metricsIntervalMs`：日志与指标输出
@@ -335,7 +334,6 @@ docker compose -f docker-compose.redis.yml up -d
 {
   "deviceLeaseStore": {
     "mode": "redis",
-    "bindPeerIp": true,
     "prefix": "4px:device_lease",
     "redis": {
       "enabled": true,
@@ -348,7 +346,7 @@ docker compose -f docker-compose.redis.yml up -d
 }
 ```
 
-当前实现已废弃 `x-client-instance-id` 路径，仅使用 `x-device-ticket`。
+当前实现已废弃 `x-client-instance-id` 路径；设备识别固定使用 `x-device-id`，并配合 `x-device-ticket` 做签发校验与自愈。
 
 ## 当前能力与限制
 

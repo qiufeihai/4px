@@ -4,9 +4,11 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	cryptorand "crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +19,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -51,6 +54,7 @@ type Config struct {
 	UpstreamH2ReadIdleMS       int    `json:"upstream_h2_read_idle_timeout_ms"`
 	UpstreamH2PingTimeoutMS    int    `json:"upstream_h2_ping_timeout_ms"`
 	SessionHeartbeatIntervalMS int    `json:"session_heartbeat_interval_ms"`
+	DeviceID                   string `json:"device_id"`
 	DeviceTicket               string `json:"device_ticket"`
 }
 
@@ -60,6 +64,7 @@ type proxyRuntime struct {
 	upstreamURL  string
 	authToken    string
 	mu           sync.RWMutex
+	deviceID     string
 	deviceTicket string
 }
 
@@ -272,6 +277,31 @@ func GetMuxRuntimeStats() MuxRuntimeStats {
 	return MuxRuntimeStats{}
 }
 
+func setClientAuthHeaders(headers http.Header, authToken string, deviceID string, deviceTicket string) {
+	headers.Set("x-auth-token", authToken)
+	if id := strings.TrimSpace(deviceID); id != "" {
+		headers.Set("x-device-id", id)
+	}
+	if ticket := strings.TrimSpace(deviceTicket); ticket != "" {
+		headers.Set("x-device-ticket", ticket)
+	}
+}
+
+func ensureRuntimeDeviceID(cfg *Config) string {
+	if cfg == nil {
+		return ""
+	}
+	if id := strings.TrimSpace(cfg.DeviceID); id != "" {
+		return id
+	}
+	buf := make([]byte, 16)
+	if _, err := io.ReadFull(cryptorand.Reader, buf); err != nil {
+		buf = []byte(strconv.FormatInt(time.Now().UnixNano(), 16))
+	}
+	cfg.DeviceID = "go-" + hex.EncodeToString(buf)
+	return cfg.DeviceID
+}
+
 func ConnectProbe(cfg *Config, targetHost string, targetPort int) ControlResult {
 	if cfg == nil {
 		return ControlResult{OK: false, Error: "nil config"}
@@ -300,12 +330,9 @@ func ConnectProbe(cfg *Config, targetHost string, targetPort int) ControlResult 
 	if err != nil {
 		return ControlResult{OK: false, Error: err.Error()}
 	}
-	req.Header.Set("x-auth-token", cfg.AuthToken)
+	setClientAuthHeaders(req.Header, cfg.AuthToken, ensureRuntimeDeviceID(cfg), cfg.DeviceTicket)
 	req.Header.Set("x-target-host", strings.TrimSpace(targetHost))
 	req.Header.Set("x-target-port", strconv.Itoa(targetPort))
-	if ticket := strings.TrimSpace(cfg.DeviceTicket); ticket != "" {
-		req.Header.Set("x-device-ticket", ticket)
-	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return ControlResult{OK: false, Error: err.Error()}
@@ -349,8 +376,7 @@ func SendOffline(cfg *Config) ControlResult {
 	if err != nil {
 		return ControlResult{OK: false, Error: err.Error()}
 	}
-	req.Header.Set("x-auth-token", cfg.AuthToken)
-	req.Header.Set("x-device-ticket", ticket)
+	setClientAuthHeaders(req.Header, cfg.AuthToken, ensureRuntimeDeviceID(cfg), ticket)
 	resp, err := client.Do(req)
 	if err != nil {
 		return ControlResult{OK: false, Error: err.Error()}
@@ -382,10 +408,7 @@ func GetSessionStatus(cfg *Config) SessionStatusResult {
 	if err != nil {
 		return SessionStatusResult{OK: false, Error: err.Error()}
 	}
-	req.Header.Set("x-auth-token", cfg.AuthToken)
-	if ticket := strings.TrimSpace(cfg.DeviceTicket); ticket != "" {
-		req.Header.Set("x-device-ticket", ticket)
-	}
+	setClientAuthHeaders(req.Header, cfg.AuthToken, ensureRuntimeDeviceID(cfg), cfg.DeviceTicket)
 	resp, err := client.Do(req)
 	if err != nil {
 		return SessionStatusResult{OK: false, Error: err.Error()}
@@ -433,6 +456,7 @@ func RunProxyWithContext(ctx context.Context, cfg *Config) error {
 		client:       client,
 		upstreamURL:  fmt.Sprintf("https://%s:%d%s", cfg.UpstreamHost, cfg.UpstreamPort, cfg.UpstreamPath),
 		authToken:    cfg.AuthToken,
+		deviceID:     ensureRuntimeDeviceID(cfg),
 		deviceTicket: strings.TrimSpace(cfg.DeviceTicket),
 	}
 	defer rt.sendOfflineSignal()
@@ -553,10 +577,7 @@ func (rt *proxyRuntime) sendHeartbeat(parent context.Context) bool {
 		logf("WARN", "build heartbeat request failed err=%v", err)
 		return false
 	}
-	req.Header.Set("x-auth-token", rt.authToken)
-	if ticket := rt.getDeviceTicket(); ticket != "" {
-		req.Header.Set("x-device-ticket", ticket)
-	}
+	setClientAuthHeaders(req.Header, rt.authToken, rt.deviceID, rt.getDeviceTicket())
 
 	resp, err := rt.client.Do(req)
 	if err != nil {
@@ -604,8 +625,7 @@ func (rt *proxyRuntime) sendOfflineSignal() {
 		logf("WARN", "build offline request failed err=%v", err)
 		return
 	}
-	req.Header.Set("x-auth-token", rt.authToken)
-	req.Header.Set("x-device-ticket", ticket)
+	setClientAuthHeaders(req.Header, rt.authToken, rt.deviceID, ticket)
 
 	resp, err := rt.client.Do(req)
 	if err != nil {
@@ -732,6 +752,12 @@ type writeCloserWithErr interface {
 	CloseWithError(error) error
 }
 
+type socks5Request struct {
+	command byte
+	host    string
+	port    int
+}
+
 func showSystemProxyStatus() error {
 	out, err := GetSystemProxyStatus()
 	if err != nil {
@@ -782,6 +808,27 @@ func ensureConfigIfMissing(path string, configExplicit bool) (bool, error) {
 		return false, err
 	}
 	return true, nil
+}
+
+func deviceIDSidecarPath(configPath string) string {
+	base := filepath.Base(configPath)
+	return filepath.Join(filepath.Dir(configPath), "."+base+".device_id")
+}
+
+func readOrCreateDeviceID(configPath string) string {
+	sidecarPath := deviceIDSidecarPath(configPath)
+	if data, err := os.ReadFile(sidecarPath); err == nil {
+		if id := strings.TrimSpace(string(data)); id != "" {
+			return id
+		}
+	}
+	buf := make([]byte, 16)
+	if _, err := io.ReadFull(cryptorand.Reader, buf); err != nil {
+		buf = []byte(strconv.FormatInt(time.Now().UnixNano(), 16))
+	}
+	id := "go-" + hex.EncodeToString(buf)
+	_ = os.WriteFile(sidecarPath, []byte(id+"\n"), 0o600)
+	return id
 }
 
 func loadConfig(path string) (*Config, error) {
@@ -835,6 +882,9 @@ func loadConfig(path string) (*Config, error) {
 	}
 	if time.Duration(cfg.SessionHeartbeatIntervalMS)*time.Millisecond < minSessionHeartbeatInterval {
 		cfg.SessionHeartbeatIntervalMS = int(minSessionHeartbeatInterval / time.Millisecond)
+	}
+	if strings.TrimSpace(cfg.DeviceID) == "" {
+		cfg.DeviceID = readOrCreateDeviceID(path)
 	}
 	return &cfg, nil
 }
@@ -958,16 +1008,21 @@ func newHTTPClient(cfg *Config) (*http.Client, error) {
 func handleSOCKSConn(conn net.Conn, rt *proxyRuntime) {
 	defer conn.Close()
 	peer := conn.RemoteAddr().String()
-	connCtx, cancel := connectionContext(rt.cfg)
-	defer cancel()
-
-	targetHost, targetPort, err := socks5Handshake(conn)
+	req, err := socks5Handshake(conn)
 	if err != nil {
 		logf("WARN", "socks handshake failed peer=%s err=%v", peer, err)
 		return
 	}
 
-	target := net.JoinHostPort(targetHost, strconv.Itoa(targetPort))
+	if req.command == 0x03 {
+		handleSOCKSUDPAssociate(conn, rt, peer)
+		return
+	}
+
+	connCtx, cancel := connectionContext(rt.cfg)
+	defer cancel()
+
+	target := net.JoinHostPort(req.host, strconv.Itoa(req.port))
 	logf("DEBUG", "socks connect peer=%s target=%s", peer, target)
 
 	respBody, pw, err := openUpstreamTunnel(connCtx, rt, target)
@@ -1148,10 +1203,11 @@ func openUpstreamTunnel(ctx context.Context, rt *proxyRuntime, target string) (i
 			_ = pw.Close()
 			return nil, nil, err
 		}
-		req.Header.Set("x-auth-token", rt.authToken)
-		if attempt == 0 && originalTicket != "" {
-			req.Header.Set("x-device-ticket", originalTicket)
+		ticket := ""
+		if attempt == 0 {
+			ticket = originalTicket
 		}
+		setClientAuthHeaders(req.Header, rt.authToken, rt.deviceID, ticket)
 		req.Header.Set("x-target-host", host)
 		req.Header.Set("x-target-port", portStr)
 		req.Header.Set("x-trace-id", traceID)
@@ -1214,72 +1270,296 @@ func copyPooled(dst io.Writer, src io.Reader) (int64, error) {
 	return io.CopyBuffer(dst, src, *bufPtr)
 }
 
-func socks5Handshake(conn net.Conn) (string, int, error) {
+func handleSOCKSUDPAssociate(conn net.Conn, rt *proxyRuntime, peer string) {
+	udpLn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		logf("WARN", "socks udp associate listen failed peer=%s err=%v", peer, err)
+		return
+	}
+	defer udpLn.Close()
+
+	localAddr, _ := udpLn.LocalAddr().(*net.UDPAddr)
+	if localAddr == nil {
+		logf("WARN", "socks udp associate invalid local addr peer=%s", peer)
+		return
+	}
+	if err := writeSOCKS5Reply(conn, 0x00, localAddr.IP, localAddr.Port); err != nil {
+		logf("WARN", "socks udp associate reply failed peer=%s err=%v", peer, err)
+		return
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = io.Copy(io.Discard, conn)
+	}()
+
+	var clientAddr *net.UDPAddr
+	buf := make([]byte, 64*1024)
+	for {
+		_ = udpLn.SetReadDeadline(time.Now().Add(1 * time.Second))
+		n, addr, err := udpLn.ReadFromUDP(buf)
+		if err != nil {
+			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+				select {
+				case <-done:
+					return
+				default:
+					continue
+				}
+			}
+			logf("WARN", "socks udp associate read failed peer=%s err=%v", peer, err)
+			return
+		}
+		if clientAddr == nil {
+			clientAddr = addr
+		} else if !addr.IP.Equal(clientAddr.IP) || addr.Port != clientAddr.Port {
+			continue
+		}
+
+		targetHost, targetPort, payload, err := parseSOCKS5UDPDatagram(buf[:n])
+		if err != nil {
+			continue
+		}
+		if targetPort != 53 {
+			continue
+		}
+		respPayload, err := proxyDNSOverTCP(rt, targetHost, targetPort, payload)
+		if err != nil {
+			logf("WARN", "dns relay failed peer=%s target=%s:%d err=%v", peer, targetHost, targetPort, err)
+			continue
+		}
+		packet, err := buildSOCKS5UDPDatagram(targetHost, targetPort, respPayload)
+		if err != nil {
+			logf("WARN", "dns relay response encode failed peer=%s target=%s:%d err=%v", peer, targetHost, targetPort, err)
+			continue
+		}
+		_, _ = udpLn.WriteToUDP(packet, clientAddr)
+	}
+}
+
+func proxyDNSOverTCP(rt *proxyRuntime, targetHost string, targetPort int, payload []byte) ([]byte, error) {
+	if len(payload) == 0 {
+		return nil, errors.New("empty dns payload")
+	}
+	if len(payload) > 0xffff {
+		return nil, errors.New("dns payload too large")
+	}
+
+	target := net.JoinHostPort(targetHost, strconv.Itoa(targetPort))
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	respBody, pw, err := openUpstreamTunnel(ctx, rt, target)
+	if err != nil {
+		return nil, err
+	}
+	defer respBody.Close()
+
+	reqLen := make([]byte, 2)
+	binary.BigEndian.PutUint16(reqLen, uint16(len(payload)))
+	if _, err := pw.Write(reqLen); err != nil {
+		_ = pw.CloseWithError(err)
+		return nil, err
+	}
+	if _, err := pw.Write(payload); err != nil {
+		_ = pw.CloseWithError(err)
+		return nil, err
+	}
+	if err := pw.Close(); err != nil {
+		return nil, err
+	}
+
+	respLenBuf := make([]byte, 2)
+	if _, err := io.ReadFull(respBody, respLenBuf); err != nil {
+		return nil, err
+	}
+	respLen := int(binary.BigEndian.Uint16(respLenBuf))
+	if respLen == 0 {
+		return nil, errors.New("empty dns response")
+	}
+	resp := make([]byte, respLen)
+	if _, err := io.ReadFull(respBody, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+func parseSOCKS5UDPDatagram(packet []byte) (string, int, []byte, error) {
+	if len(packet) < 10 {
+		return "", 0, nil, errors.New("short udp packet")
+	}
+	if packet[2] != 0x00 {
+		return "", 0, nil, errors.New("fragmented udp unsupported")
+	}
+	offset := 3
+	host, next, err := parseSOCKS5Addr(packet, offset)
+	if err != nil {
+		return "", 0, nil, err
+	}
+	offset = next
+	if len(packet) < offset+2 {
+		return "", 0, nil, errors.New("udp packet missing port")
+	}
+	port := int(binary.BigEndian.Uint16(packet[offset : offset+2]))
+	offset += 2
+	payload := make([]byte, len(packet[offset:]))
+	copy(payload, packet[offset:])
+	return host, port, payload, nil
+}
+
+func buildSOCKS5UDPDatagram(host string, port int, payload []byte) ([]byte, error) {
+	addr, err := encodeSOCKS5Addr(host)
+	if err != nil {
+		return nil, err
+	}
+	packet := make([]byte, 0, 3+len(addr)+2+len(payload))
+	packet = append(packet, 0x00, 0x00, 0x00)
+	packet = append(packet, addr...)
+	portBuf := make([]byte, 2)
+	binary.BigEndian.PutUint16(portBuf, uint16(port))
+	packet = append(packet, portBuf...)
+	packet = append(packet, payload...)
+	return packet, nil
+}
+
+func parseSOCKS5Addr(buf []byte, offset int) (string, int, error) {
+	if len(buf) <= offset {
+		return "", 0, errors.New("missing atyp")
+	}
+	atyp := buf[offset]
+	offset++
+	switch atyp {
+	case 0x01:
+		if len(buf) < offset+4 {
+			return "", 0, errors.New("short ipv4 address")
+		}
+		return net.IP(buf[offset : offset+4]).String(), offset + 4, nil
+	case 0x03:
+		if len(buf) <= offset {
+			return "", 0, errors.New("short domain length")
+		}
+		n := int(buf[offset])
+		offset++
+		if len(buf) < offset+n {
+			return "", 0, errors.New("short domain address")
+		}
+		return string(buf[offset : offset+n]), offset + n, nil
+	case 0x04:
+		if len(buf) < offset+16 {
+			return "", 0, errors.New("short ipv6 address")
+		}
+		return net.IP(buf[offset : offset+16]).String(), offset + 16, nil
+	default:
+		return "", 0, errors.New("unsupported atyp")
+	}
+}
+
+func encodeSOCKS5Addr(host string) ([]byte, error) {
+	if ip := net.ParseIP(host); ip != nil {
+		if ipv4 := ip.To4(); ipv4 != nil {
+			return append([]byte{0x01}, ipv4...), nil
+		}
+		if ipv6 := ip.To16(); ipv6 != nil {
+			return append([]byte{0x04}, ipv6...), nil
+		}
+	}
+	if len(host) == 0 || len(host) > 255 {
+		return nil, errors.New("invalid domain length")
+	}
+	return append([]byte{0x03, byte(len(host))}, []byte(host)...), nil
+}
+
+func writeSOCKS5Reply(conn net.Conn, rep byte, ip net.IP, port int) error {
+	addr := net.IPv4zero
+	if ipv4 := ip.To4(); ipv4 != nil {
+		addr = ipv4
+	}
+	reply := []byte{0x05, rep, 0x00, 0x01, addr[0], addr[1], addr[2], addr[3], 0, 0}
+	binary.BigEndian.PutUint16(reply[8:], uint16(port))
+	_, err := conn.Write(reply)
+	return err
+}
+
+func socks5Handshake(conn net.Conn) (socks5Request, error) {
 	reader := bufio.NewReader(conn)
 
 	head := make([]byte, 2)
 	if _, err := io.ReadFull(reader, head); err != nil {
-		return "", 0, err
+		return socks5Request{}, err
 	}
 	if head[0] != 0x05 {
-		return "", 0, errors.New("only socks5")
+		return socks5Request{}, errors.New("only socks5")
 	}
 
 	methodN := int(head[1])
 	methods := make([]byte, methodN)
 	if _, err := io.ReadFull(reader, methods); err != nil {
-		return "", 0, err
+		return socks5Request{}, err
 	}
 
 	_, _ = conn.Write([]byte{0x05, 0x00}) // no auth
 
 	reqHead := make([]byte, 4)
 	if _, err := io.ReadFull(reader, reqHead); err != nil {
-		return "", 0, err
+		return socks5Request{}, err
 	}
-	if reqHead[0] != 0x05 || reqHead[1] != 0x01 {
-		_, _ = conn.Write([]byte{0x05, 0x07, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
-		return "", 0, errors.New("only connect command")
+	if reqHead[0] != 0x05 {
+		_ = writeSOCKS5Reply(conn, 0x01, net.IPv4zero, 0)
+		return socks5Request{}, errors.New("invalid request version")
+	}
+	if reqHead[1] != 0x01 && reqHead[1] != 0x03 {
+		_ = writeSOCKS5Reply(conn, 0x07, net.IPv4zero, 0)
+		return socks5Request{}, errors.New("only connect or udp associate command")
 	}
 
-	atyp := reqHead[3]
-	var host string
-	switch atyp {
-	case 0x01: // ipv4
-		buf := make([]byte, 4)
-		if _, err := io.ReadFull(reader, buf); err != nil {
-			return "", 0, err
+	addrBuf := append([]byte{reqHead[3]}, []byte{}...)
+	switch reqHead[3] {
+	case 0x01:
+		tmp := make([]byte, 4)
+		if _, err := io.ReadFull(reader, tmp); err != nil {
+			return socks5Request{}, err
 		}
-		host = net.IP(buf).String()
-	case 0x03: // domain
+		addrBuf = append(addrBuf, tmp...)
+	case 0x03:
 		lenBuf := make([]byte, 1)
 		if _, err := io.ReadFull(reader, lenBuf); err != nil {
-			return "", 0, err
+			return socks5Request{}, err
 		}
-		n := int(lenBuf[0])
-		d := make([]byte, n)
-		if _, err := io.ReadFull(reader, d); err != nil {
-			return "", 0, err
+		addrBuf = append(addrBuf, lenBuf[0])
+		tmp := make([]byte, int(lenBuf[0]))
+		if _, err := io.ReadFull(reader, tmp); err != nil {
+			return socks5Request{}, err
 		}
-		host = string(d)
-	case 0x04: // ipv6
-		buf := make([]byte, 16)
-		if _, err := io.ReadFull(reader, buf); err != nil {
-			return "", 0, err
+		addrBuf = append(addrBuf, tmp...)
+	case 0x04:
+		tmp := make([]byte, 16)
+		if _, err := io.ReadFull(reader, tmp); err != nil {
+			return socks5Request{}, err
 		}
-		host = net.IP(buf).String()
+		addrBuf = append(addrBuf, tmp...)
 	default:
-		return "", 0, errors.New("unsupported atyp")
+		return socks5Request{}, errors.New("unsupported atyp")
+	}
+	host, _, err := parseSOCKS5Addr(addrBuf, 0)
+	if err != nil {
+		return socks5Request{}, err
 	}
 
 	portBuf := make([]byte, 2)
 	if _, err := io.ReadFull(reader, portBuf); err != nil {
-		return "", 0, err
+		return socks5Request{}, err
 	}
 	port := int(portBuf[0])<<8 | int(portBuf[1])
 
-	_, _ = conn.Write([]byte{0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
-	return host, port, nil
+	if reqHead[1] == 0x01 {
+		_ = writeSOCKS5Reply(conn, 0x00, net.IPv4zero, 0)
+	}
+	return socks5Request{
+		command: reqHead[1],
+		host:    host,
+		port:    port,
+	}, nil
 }
 
 func setSystemProxy(cfg *Config, enable bool) error {
